@@ -205,3 +205,20 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+output/
+
+# External repos - Ignore all but modified files
+TRELLIS.2/
+!TRELLIS.2/setup.sh
+!TRELLIS.2/trellis2/pipelines/rembg/BiRefNet.py
+
+UniRig/
+!UniRig/launch/inference/extract.sh
+!UniRig/run.py
+!UniRig/src/data/asset.py
+!UniRig/src/data/exporter.py
+!UniRig/src/data/extract.py
+!UniRig/src/data/raw_data.py
+!UniRig/src/system/ar.py
+!UniRig/src/system/skin.py
