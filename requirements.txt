@@ -31,5 +31,8 @@ pymeshlab
 python-box
 lightning
 torch_geometric
-# Note: bpy usually requires a blender-bundled python or 'bpy' package from pip (if compatible)
-# We will use the system blender for bpy-dependent extraction if possible.
+fast-simplification
+pyrender
+pyopengl
+scipy
+numpy

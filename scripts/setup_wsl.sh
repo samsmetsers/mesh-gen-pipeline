@@ -54,4 +54,10 @@ if ! command -v conda &> /dev/null; then
     export MAX_JOBS=1
     pip install -r requirements.txt
 
+    # 5. Create Blender-specific environment (Python 3.12 for Blender 4.0+)
+    echo "Creating 'blender_env' for Blender Python compatibility..."
+    if ! conda info --envs | grep -q "^blender_env "; then
+        conda create -n blender_env python=3.12 numpy -y
+    fi
+
 echo "WSL2 Setup Complete! Please restart your terminal or run 'source ~/.bashrc' and 'conda activate meshgen'."
