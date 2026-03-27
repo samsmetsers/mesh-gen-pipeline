@@ -212,6 +212,7 @@ extern/
 .venv**
 .claude/
 MEMORY.md
+GEMINI.md
 
 # External repos - Ignore all but modified files
 TRELLIS.2/

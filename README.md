@@ -143,6 +143,18 @@ Blender (via `bpy`) imports the rigged FBX and applies:
 2. **Material Setup**: Prioritizes original UV textures with a fallback to vertex colors.
 3. **NLA Animation**: Applies retargeted animation tracks and exports the final asset.
 
+## License
+
+The pipeline orchestration code in this repository is released under the **MIT License** — see [LICENSE](LICENSE).
+
+> **Non-commercial use only.** The complete running pipeline depends on third-party components with additional restrictions. In particular:
+>
+> - **FLUX.1-dev** ([license](https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md)) — non-commercial, research and personal use only.
+> - **nvdiffrast** ([license](https://github.com/NVlabs/nvdiffrast/blob/main/LICENSE.txt)) — NVIDIA Source Code License; non-commercial research use only.
+> - **PyMeshLab** (GPL-3.0) and **Blender/bpy** (GPL-2.0+) — copyleft; source files that directly import these are subject to their respective GPL licenses.
+>
+> You are responsible for complying with the licenses of all third-party components you install. See [LICENSE](LICENSE) for the full list.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
