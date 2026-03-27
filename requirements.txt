@@ -6,6 +6,7 @@ sentencepiece
 protobuf
 
 # Stage 2: TRELLIS.2 Core & Post-processing
+einops
 opencv-python-headless
 imageio
 imageio-ffmpeg

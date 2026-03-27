@@ -1,107 +1,155 @@
-# Mesh Generation & Animation Pipeline
+# mesh-gen-pipeline
 
-An autonomous pipeline for generating high-quality rigged and animated 3D characters from text prompts.
+Automated text-to-3D character pipeline. Takes a text prompt and produces a rigged, animated, game-ready FBX and GLB asset.
 
-## 🚀 Overview
-
-The pipeline consists of 4 specialized stages:
-1.  **Stage 1: Vision Prior (FLUX):** Generates a high-quality 2D reference image from your prompt.
-2.  **Stage 2: 3D Generation (TRELLIS.2):** Converts the 2D image into a high-fidelity 3D mesh.
-3.  **Stage 3: Refinement:** Optimizes the mesh and handles format conversions (OBJ to GLB).
-4.  **Stage 4: Animation Routing (UniRig + Blender):** Automatically extracts a skeleton, predicts skinning weights, and assembles a rigged GLB with **T-Pose** and **WalkCycle** animations.
-
----
-
-## 💻 Environment Requirements
-
-This pipeline requires a Linux environment (WSL2 supported) and an NVIDIA GPU (RTX 3080+ recommended).
-
-### 1. WSL2 Installation (Windows Users)
-If you are on Windows, you MUST use WSL2 (Ubuntu 22.04 or 24.04).
-- Open PowerShell as Admin and run: `wsl --install`
-- Follow the official guide: [Install WSL](https://learn.microsoft.com/en-us/windows/wsl/install)
-
-### 2. CUDA & Drivers
-Ensure you have the latest NVIDIA drivers installed on Windows. WSL2 will share the GPU with Windows.
-- Inside WSL, you need the CUDA toolkit. Our setup script handles this, but your driver version should support **CUDA 12.4+**.
-
-### 3. Dual Conda Environments
-Due to dependency conflicts between deep learning libraries and Blender's bundled Python, the pipeline uses two environments:
-- **`meshgen` (Python 3.10):** Main pipeline environment (Stage 1-4 logic).
-- **`blender_env` (Python 3.12):** Specifically for Blender assembly to provide compatible `numpy` versions.
-
----
-
-## 🛠️ Installation
-
-1.  **Clone the repo and submodules:**
-    ```bash
-    git clone --recursive <repo-url>
-    cd mesh-gen-pipeline
-    ```
-
-2.  **Run the automated setup:**
-    ```bash
-    bash scripts/setup_wsl.sh
-    ```
-    This script will:
-    - Install Miniconda
-    - Create the `meshgen` and `blender_env` environments
-    - Install PyTorch with CUDA 12.4 support
-    - Install all dependencies from `requirements.txt`
-
-3.  **Setup external repos:**
-    ```bash
-    bash scripts/setup_external_repos.sh
-    ```
-
----
-
-## 🏃 Usage
-
-Run the complete pipeline with a single command:
-
-```bash
-conda activate meshgen
-python main.py --prompt "A mystical shaman with a staff" --output_name shaman --type character
+```
+Prompt → Reference image → Raw 3D mesh → Refined mesh → Rigged + animated character
 ```
 
-### Options:
-- `--type character`: Enables Stage 4 rigging and animation.
-- `--type rigid`: Enables rigid-body physics simulation (coming soon).
-- `--skip_gen`: Use an existing reference image in `output/<name>/`.
-- `--skip_trellis`: Use an existing raw mesh.
-- `--skip_refine`: Use an existing refined mesh.
+## Pipeline stages
 
----
+| Stage | Model | Environment | Input → Output |
+|-------|-------|-------------|----------------|
+| 1 | FLUX (FLUX.2-klein-9B) | `.venv` | Text → reference PNG |
+| 2 | TRELLIS.2 (4B) | `.venv` | PNG → raw OBJ + GLB |
+| 3 | PyMeshLab | `.venv` | Raw OBJ → repaired + texture-preserved GLB |
+| 4a | Skip (Rig-Aware fallback) | `.venv` | N/A (Props handled in Stage 4d) |
+| 4b | Puppeteer | `.venv_unirig` | Refined GLB → rigged_body.fbx + joints.json |
+| 4c | Procedural motion synthesis | `.venv` | joints.json → walk/idle/attack animations |
+| 4d | Blender (bpy) | `.venv_riganything` | Rig + motions + textures + Rigid Weighting → final FBX/GLB |
 
-## 📂 Project Structure
+## Requirements
 
-- `src/`: Core pipeline logic.
-  - `extract_trimesh.py`: Mesh preprocessing.
-  - `calculate_high_poly_skin.py`: High-resolution skin weight prediction.
-  - `assemble_character.py`: Blender script for rigging and NLA animation assembly.
-- `TRELLIS.2/`: 3D generation engine.
-- `UniRig/`: Skeleton and skinning prediction engine.
-- `output/`: Generated assets, logs, and final GLB files.
+- Linux (tested on WSL2)
+- CUDA-capable GPU (tested on RTX 3080 / SM 8.6)
+- CUDA 12+ toolkit installed (`nvcc` on PATH)
+- [uv](https://docs.astral.sh/uv/) package manager
 
----
+## Setup
 
-## 🧪 Viewing Animations in Blender
+```bash
+# 1. Clone external repositories (TRELLIS.2, Puppeteer, SAMPart3D)
+bash scripts/setup_external_repos.sh
 
-To check the rigged character:
-1.  Import `output/<name>/<name>_final.glb` into Blender.
-2.  Select the **Armature**.
-3.  Change the bottom panel to the **Action Editor** (inside Dope Sheet).
-4.  Select **WalkCycle** or **TPose** from the dropdown.
-5.  Press **Spacebar** to play.
+# 2. Install all environments and build CUDA extensions
+bash scripts/setup_uv_envs.sh
+```
 
----
+This will:
+- Create `.venv` (Python 3.13) for stages 1–3 and motion synthesis
+- Build and install CUDA extensions: `cumesh`, `o_voxel`, `flex_gemm`, `nvdiffrast`
+- Create `.venv_PartSAM`, `.venv_unirig`, `.venv_riganything` for stage 4
 
-## 📝 Troubleshooting & Learned Fixes
+> **CUDA 13 note:** The setup script automatically patches CuMesh for CUDA 13 CCCL API changes (CUB DeviceScan in-place call signatures).
 
-During development, several critical fixes were applied to the base libraries:
-- **UniRig Model Loading:** Fixed `UnpicklingError` by allowing `Box` objects in `torch.load`.
-- **Spatial Alignment:** Implemented automatic axis-mapping between UniRig's Y-up space and Blender's Z-up space.
-- **Bone Visualization:** Fixed "little balls" armature issue by correctly connecting parent joints to children or limb tips.
-- **Headless Blender:** Solved `bpy` dependency issues by linking to a specialized `blender_env`.
+> **Flash-attn:** Optional. Pipeline defaults to PyTorch `sdpa` backend. Set `SKIP_FLASH_ATTN=1` to skip the slow flash-attn build.
+
+### GPU architecture
+
+The default `TORCH_CUDA_ARCH_LIST` is `8.6` (RTX 30xx). Change before running setup if needed:
+
+```bash
+export TORCH_CUDA_ARCH_LIST="8.9"   # RTX 40xx
+bash scripts/setup_uv_envs.sh
+```
+
+## Usage
+
+```bash
+# Full pipeline (all stages)
+uv run main.py --prompt "A warrior elf with a sword" --output_name elf
+
+# Specific stages only
+uv run main.py --prompt "A shaman with a wooden staff" --output_name shaman --stage 3 4
+
+# Override face target (default: 10000)
+uv run main.py --prompt "A dragon" --output_name dragon --target_faces 8000
+```
+
+### Output layout
+
+```
+output/
+└── shaman/
+    ├── shaman_final.fbx          # rigged + animated, game-ready
+    ├── shaman_final.glb          # same, GLTF format
+    └── intermediate/
+        ├── shaman_reference.png  # stage 1 output
+        ├── shaman_raw.obj        # stage 2 output
+        ├── shaman_raw.glb        # stage 2 output (with UV texture)
+        ├── shaman_refined.glb    # stage 3 output (repaired, high-poly)
+        ├── rigged_body.fbx       # stage 4b output (Puppeteer)
+        ├── joints.json           # stage 4b output (skeleton hierarchy)
+        └── motions/              # stage 4c output (animation NPYs)
+```
+
+## Models
+
+Models are downloaded automatically from HuggingFace on first run:
+
+| Model | HuggingFace ID | Used in |
+|-------|----------------|---------|
+| FLUX.2-klein-9B | `black-forest-labs/FLUX.2-klein-9B` | Stage 1 |
+| TRELLIS.2-4B | `microsoft/TRELLIS.2-4B` | Stage 2 |
+| DINOv3-ViT-L | `facebook/dinov3-vitl16-pretrain-lvd1689m` | Stage 2 |
+| BiRefNet (rembg) | `ZhengPeng7/BiRefNet` | Stage 2 |
+| Puppeteer skeleton | bundled in `extern/Puppeteer/` | Stage 4b |
+| Puppeteer skinning | bundled in `extern/Puppeteer/` | Stage 4b |
+| Michelangelo VAE | bundled in `extern/Puppeteer/` | Stage 4b |
+
+## Quality check
+
+```bash
+uv run scripts/check_quality.py output/shaman/
+```
+
+Checks mesh integrity, material presence, rig validity, and animation data.
+
+## Stage details
+
+### Stage 3 — Mesh Optimization
+
+Runs in the root `.venv`. Two phases:
+1. PyMeshLab in-place repair (close holes, merge seam vertices, remove non-manifold geometry).
+2. Watertightness check — full reconstruction only if >2% non-manifold edges.
+
+**Decimation is disabled** to preserve maximum geometric detail and texture fidelity from the TRELLIS generation.
+
+### Stage 4a — Segmentation (Skipped)
+
+The pipeline no longer physically separates props into different files. This avoids VRAM-heavy segmentation models and preserves fused geometric seams. Props are instead handled via rigid weighting in Stage 4d.
+
+### Stage 4b — Rigging
+
+Puppeteer predicts a skeleton and skinning weights for humanoid characters. If Puppeteer fails, a heuristic T-pose humanoid skeleton is generated from the mesh bounding box so downstream stages can continue.
+
+### Stage 4c — Motion Synthesis
+
+Fully procedural, no external model required. Detects character type (biped/quadruped/flying) and class (mage/staff, melee, archer) from the text prompt, then generates appropriate animation tracks:
+
+| Character | Animations generated |
+|-----------|----------------------|
+| Biped mage/shaman | idle, walk, staff raise attack |
+| Biped melee fighter | idle, walk, sword slash |
+| Biped archer/ranger | idle, walk, bow aim+shoot |
+| Biped (generic) | idle, walk, lunge |
+| Quadruped | idle, diagonal trot |
+| Flying creature | idle (perched), wing-flap locomotion |
+
+### Stage 4d — Assembly & Rigid Weighting
+
+Blender (via `bpy`) imports the rigged FBX and applies:
+1. **Rig-Aware Rigid Weighting**: Automatically detects vertices belonging to props (extending past hands) and forces their weights to 100% hand-bone attachment. This treats fused weapons as rigid extensions.
+2. **Material Setup**: Prioritizes original UV textures with a fallback to vertex colors.
+3. **NLA Animation**: Applies retargeted animation tracks and exports the final asset.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `ModuleNotFoundError: No module named 'cumesh'` | CUDA extensions not built | Run `bash scripts/setup_uv_envs.sh` |
+| `OSError: libcudart.so.11.0` in stage 4b | `torch-scatter` built for wrong CUDA | `uv pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.1+cu121.html --python .venv_unirig/bin/python --reinstall` |
+| `ModuleNotFoundError: No module named 'pkg_resources'` in stage 4b | `setuptools` too new | `uv pip install "setuptools<60" --python .venv_unirig/bin/python --reinstall` |
+| Stage 4b rigging fails, pipeline continues | Puppeteer model incompatibility | Heuristic skeleton fallback is used; output is still generated but without AI-predicted skinning |
+| White/grey model in final GLB | No TRELLIS colour source | Re-run from stage 2 to regenerate `shaman_raw.glb` |
+| `[SPARSE] Attention backend: flash_attn` then ImportError | flash-attn not installed | Set `ATTN_BACKEND=sdpa` or run with `SKIP_FLASH_ATTN=1` during setup |
