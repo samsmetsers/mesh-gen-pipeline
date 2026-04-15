@@ -1,0 +1,53 @@
+[project]
+name = "mesh-gen-pipeline"
+version = "0.1.0"
+description = "Prompt-to-3D-rigged-game-character pipeline (Shap-E → PyMeshLab → Puppeteer → Blender)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    # Core
+    "pydantic>=2.13.0",
+    "requests>=2.33.1",
+    "openai>=1.12.0",
+    # Testing
+    "pytest>=9.0.3",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+stage2 = [
+    "torch>=2.5.0",
+    "diffusers>=0.30.0",
+    "transformers>=4.44.0",
+    "accelerate>=0.33.0",
+    "trimesh[all]>=4.4",
+]
+stage3 = [
+    "pymeshlab",
+    "trimesh[all]>=4.4",
+]
+all = [
+    "mesh-gen-pipeline[stage2,stage3]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Ignore import warnings for packages not yet installed (real-mode deps)
+filterwarnings = [
+    "ignore::UserWarning",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
