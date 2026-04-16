@@ -124,77 +124,64 @@ def _zone(sections, frac_lo, frac_hi, min_count=4):
             if frac_lo <= s['frac'] <= frac_hi and s['count'] >= min_count]
 
 
+def _density_center(verts):
+    if not verts: return (0, 0, 0)
+    return (_med([v[0] for v in verts]), _med([v[1] for v in verts]), _med([v[2] for v in verts]))
+
 def _arm_chains_from_verts(verts, cx, cy, sh_x, z_min, height):
     """
-    Detect left and right arm bone chains from vertex clusters.
-    Uses medians and spatial clustering to be robust to combat poses and props.
+    Detect left and right arm bone chains using density-based search.
+    More robust than simple spatial thresholds.
     """
-    lo = z_min + height * 0.55
-    hi = z_min + height * 0.92
-    thresh = sh_x * 0.8  # slightly tighter than before
+    def _find_arm_chain(sign):
+        # 1. Candidate limb vertices: exclude core torso
+        # Limb zone: height 45-90%, and at least 60% of shoulder width away from center on the correct side
+        limb_zone = [v for v in verts 
+                    if 0.45 * height < (v[2] - z_min) < 0.90 * height 
+                    and (sign * (v[0] - cx)) > (sh_x * 0.6)]
+        
+        if len(limb_zone) < 20:
+            # Fallback to T-pose
+            sz = z_min + height * 0.78
+            return [
+                (cx + sign * sh_x, cy, sz),
+                (cx + sign * sh_x * 1.5, cy, sz - height * 0.05),
+                (cx + sign * sh_x * 2.0, cy, sz - height * 0.10)
+            ]
 
-    left_verts  = [v for v in verts if lo <= v[2] <= hi and v[0] < cx - thresh]
-    right_verts = [v for v in verts if lo <= v[2] <= hi and v[0] > cx + thresh]
-
-    def _default_arm(sign):
-        sz = z_min + height * 0.80
-        return [
-            (cx + sign * sh_x, cy, sz),
-            (cx + sign * sh_x, cy, sz - height * 0.20),
-            (cx + sign * sh_x, cy, sz - height * 0.40),
-        ]
-
-    def _chain(side_verts, sign):
-        if len(side_verts) < 15:
-            return _default_arm(sign)
-
-        # 1. Find shoulder (highest vertices near the torso attachment)
-        sv = sorted(side_verts, key=lambda v: v[2], reverse=True)
-        # Shoulder is median of the highest 20% of vertices
-        shoulder_verts = sv[:max(1, len(sv) // 5)]
-        shoulder_pos = (
-            _med([v[0] for v in shoulder_verts]),
-            _med([v[1] for v in shoulder_verts]),
-            _med([v[2] for v in shoulder_verts]),
-        )
-
-        # 2. Find hand (vertices furthest from shoulder on X or Y)
-        # Actually, furthest distance in 3D is more robust
+        # 2. Shoulder: highest vertices in the inner limb zone
+        # Use sh_x * 1.5 as outer limit for "inner" shoulder zone
+        inner_zone = [v for v in limb_zone if (sign * (v[0] - cx)) < (sh_x * 1.5)]
+        if not inner_zone: inner_zone = limb_zone
+        shoulder_verts = sorted(inner_zone, key=lambda v: v[2], reverse=True)[:max(5, len(inner_zone)//10)]
+        shoulder_pos = _density_center(shoulder_verts)
+        
+        # 3. Hand: vertices furthest from the shoulder in 3D
         def dist_sq(v1, v2):
             return sum((a - b)**2 for a, b in zip(v1, v2))
         
-        # Sort by distance from shoulder
-        dv = sorted(side_verts, key=lambda v: dist_sq(v, shoulder_pos), reverse=True)
-        # Hand is median of the 10% furthest vertices
-        hand_verts = dv[:max(1, len(dv) // 10)]
-        hand_pos = (
-            _med([v[0] for v in hand_verts]),
-            _med([v[1] for v in hand_verts]),
-            _med([v[2] for v in hand_verts]),
-        )
-
-        # 3. Elbow (vertices in the middle distance range)
-        # We look for the median of vertices that are roughly halfway between shoulder and hand
-        mid_dist = math.sqrt(dist_sq(shoulder_pos, hand_pos)) * 0.5
-        elbow_candidates = [v for v in side_verts 
-                           if abs(math.sqrt(dist_sq(v, shoulder_pos)) - mid_dist) < mid_dist * 0.3]
-        if not elbow_candidates:
-            elbow_candidates = side_verts
+        furthest_verts = sorted(limb_zone, key=lambda v: dist_sq(v, shoulder_pos), reverse=True)[:max(5, len(limb_zone)//15)]
+        hand_pos = _density_center(furthest_verts)
         
-        elbow_pos = (
-            _med([v[0] for v in elbow_candidates]),
-            _med([v[1] for v in elbow_candidates]),
-            _med([v[2] for v in elbow_candidates]),
-        )
+        # 4. Elbow: search in the middle segment
+        # We look for a density cluster roughly between shoulder and hand
+        mid_target = [(shoulder_pos[i] + hand_pos[i])*0.5 for i in range(3)]
+        dist_sh_hand = math.sqrt(dist_sq(shoulder_pos, hand_pos))
+        elbow_candidates = [v for v in limb_zone 
+                           if abs(math.sqrt(dist_sq(v, shoulder_pos)) - dist_sh_hand*0.5) < dist_sh_hand*0.2]
+        
+        if elbow_candidates:
+            elbow_pos = _density_center(elbow_candidates)
+        else:
+            elbow_pos = mid_target
 
-        # Clamp shoulder Z into plausible zone
-        sh_lo, sh_hi = z_min + height * 0.72, z_min + height * 0.88
-        sz = max(sh_lo, min(sh_hi, shoulder_pos[2]))
-        shoulder_pos = (shoulder_pos[0], shoulder_pos[1], sz)
+        # 5. Sanity check: Shoulder Z should be near 78-82%
+        sh_z_clamped = max(z_min + height * 0.72, min(z_min + height * 0.86, shoulder_pos[2]))
+        shoulder_pos = (shoulder_pos[0], shoulder_pos[1], sh_z_clamped)
 
         return [shoulder_pos, elbow_pos, hand_pos]
 
-    return _chain(left_verts, -1), _chain(right_verts, 1)
+    return _find_arm_chain(-1), _find_arm_chain(1)
 
 
 def _landmarks_from_verts(verts, sections, z_min, height):
@@ -208,41 +195,52 @@ def _landmarks_from_verts(verts, sections, z_min, height):
         return z_min + height * frac
 
     # ── Spine centre X and Y ─────────────────────────────────────────────────────
-    # Median of per-slice medians over the reliable torso zone (50–82 %).
-    torso_secs = _zone(sections, 0.50, 0.82)
+    # Mesh is centered, but we still detect local center.
+    torso_secs = _zone(sections, 0.40, 0.82)
     cx = _med([s['med_x'] for s in torso_secs]) if torso_secs else 0.0
     cy = _med([s['med_y'] for s in torso_secs]) if torso_secs else 0.0
 
     # ── Shoulder half-width ──────────────────────────────────────────────────────
-    # p90–p10 X span at 74–86 % height.  The shoulder ATTACHMENT is near the top
-    # of the torso regardless of arm pose (combat, T-pose, raised, etc.).
-    sh_secs = _zone(sections, 0.74, 0.86)
-    sh_spans = [s['span_x'] for s in sh_secs]
-    sh_span = _med(sh_spans) if sh_spans else height * 0.40
-    sh_x = max(sh_span * 0.45, 0.06)
-    sh_x = min(sh_x, height * 0.38)   # guard against prop-inflated bbox
+    # p90–p10 X span at 72–84 % height.
+    sh_secs = _zone(sections, 0.72, 0.84)
+    sh_spans = [s['span_x'] for s in sh_secs if s['count'] > 20]
+    sh_span = _med(sh_spans) if sh_spans else height * 0.45
+    
+    # We want a bone width that represents the character's core width.
+    sh_x = sh_span * 0.40  # Represents the width where the shoulders attach
+    sh_x = max(sh_x, height * 0.10)
+    sh_x = min(sh_x, height * 0.35)
 
     # ── Hip half-width ───────────────────────────────────────────────────────────
-    # Use the 25th-percentile of X spans at 44–58 % height (conservative —
-    # excludes combat-stance arm protrusions at waist level).
-    hip_secs = _zone(sections, 0.44, 0.58)
-    hip_spans_sorted = sorted(s['span_x'] for s in hip_secs)
-    if hip_spans_sorted:
-        hip_span = hip_spans_sorted[max(0, int(len(hip_spans_sorted) * 0.25))]
+    # We look for a consistent pelvis width around 40–55 % height.
+    hip_secs = _zone(sections, 0.40, 0.55)
+    hip_spans = sorted(s['span_x'] for s in hip_secs if s['count'] > 20)
+    if hip_spans:
+        # Use lower-quartile of widths to avoid catching arm protrusions
+        hip_span = hip_spans[len(hip_spans) // 4]
     else:
-        hip_span = sh_span * 0.60
-    hip_x = max(hip_span * 0.28, 0.04)
-    hip_x = min(hip_x, height * 0.22)
+        hip_span = sh_span * 0.70
+    
+    hip_x = hip_span * 0.40
+    hip_x = max(hip_x, height * 0.08) # Slightly wider floor
+    hip_x = min(hip_x, height * 0.25)
+
+    # ── Leg landmarks ───────────────────────────────────────────────────────────
+    # Detect where the feet actually are. Look for density in the bottom 15%
+    foot_secs = _zone(sections, 0.0, 0.15)
+    if foot_secs:
+        z_ankle = _med([s['z_ctr'] for s in foot_secs])
+    else:
+        z_ankle = z_at(0.08)
 
     # ── Arm chain positions ──────────────────────────────────────────────────────
     arm_l, arm_r = _arm_chains_from_verts(verts, cx, cy, sh_x, z_min, height)
 
-    # ── PROP/ASYMMETRY CORRECTION ────────────────────────────────────────────────
-    # If one arm is significantly further or shaped differently (due to a staff/shield),
-    # and the other side looks more "natural", we can improve the symmetry of the
-    # root/spine/legs.
-    # We already used medians for cx, cy which is robust.
-    # For legs, we'll keep them symmetrical around cx.
+    # ── Symmetry ─────────────────────────────────────────────────────────────────
+    # For a humanoid skeleton to work well, we force cx=0, cy=0 as the mesh is centered.
+    # We still keep the detected values if they are small.
+    if abs(cx) < 0.1: cx = 0.0
+    if abs(cy) < 0.1: cy = 0.0
 
     return dict(
         cx=cx, cy=cy,
@@ -250,12 +248,12 @@ def _landmarks_from_verts(verts, sections, z_min, height):
         arm_l=arm_l, arm_r=arm_r,
         z_base=z_min,
         z_pelvis=z_at(0.52),
-        z_spine1=z_at(0.62),
+        z_spine1=z_at(0.60),
         z_spine2=z_at(0.72),
-        z_neck=z_at(0.84),
-        z_head=z_at(0.92),
-        z_knee=z_at(0.27),
-        z_ankle=z_at(0.06),
+        z_neck=z_at(0.85),
+        z_head=z_at(0.93),
+        z_knee=(z_at(0.52) + z_ankle) * 0.5, # Midpoint between pelvis and detected ankle
+        z_ankle=z_ankle,
         height=height,
     )
 
@@ -330,14 +328,14 @@ def create_armature(lm):
         "neck":     {"h": (cx, cy, nkz),       "t": (cx, cy, hdz),              "p": "spine_02", "cat": "head"},
         "head":     {"h": (cx, cy, hdz),       "t": (cx, cy, hdz + height*0.12),"p": "neck",     "cat": "head"},
 
-        # Left arm
-        "shoulder_l":  {"h": (cx - sh_x*0.3, cy, sp2z),      "t": al[0],    "p": "spine_02",   "cat": "limb_upper"},
+        # Left arm (Shoulder starts closer to spine for better deformation)
+        "shoulder_l":  {"h": (cx - sh_x*0.15, cy, sp2z),     "t": al[0],    "p": "spine_02",   "cat": "limb_upper"},
         "upper_arm_l": {"h": al[0],                           "t": al[1],    "p": "shoulder_l", "cat": "limb_upper"},
         "lower_arm_l": {"h": al[1],                           "t": al[2],    "p": "upper_arm_l","cat": "limb_lower"},
         "hand_l":      {"h": al[2],                           "t": _hand_tip(al), "p": "lower_arm_l","cat": "extremity"},
 
         # Right arm
-        "shoulder_r":  {"h": (cx + sh_x*0.3, cy, sp2z),      "t": ar[0],    "p": "spine_02",   "cat": "limb_upper"},
+        "shoulder_r":  {"h": (cx + sh_x*0.15, cy, sp2z),     "t": ar[0],    "p": "spine_02",   "cat": "limb_upper"},
         "upper_arm_r": {"h": ar[0],                           "t": ar[1],    "p": "shoulder_r", "cat": "limb_upper"},
         "lower_arm_r": {"h": ar[1],                           "t": ar[2],    "p": "upper_arm_r","cat": "limb_lower"},
         "hand_r":      {"h": ar[2],                           "t": _hand_tip(ar), "p": "lower_arm_r","cat": "extremity"},
@@ -345,12 +343,12 @@ def create_armature(lm):
         # Left leg
         "thigh_l": {"h": (cx - hip_x, cy, pz),  "t": (cx - hip_x, cy, knz), "p": "pelvis",  "cat": "limb_upper"},
         "shin_l":  {"h": (cx - hip_x, cy, knz), "t": (cx - hip_x, cy, anz), "p": "thigh_l", "cat": "limb_lower"},
-        "foot_l":  {"h": (cx - hip_x, cy, anz), "t": (cx - hip_x, cy - height*0.1, z0),"p": "shin_l", "cat": "extremity"},
+        "foot_l":  {"h": (cx - hip_x, cy, anz), "t": (cx - hip_x, cy - height*0.08, z0),"p": "shin_l", "cat": "extremity"},
 
         # Right leg
         "thigh_r": {"h": (cx + hip_x, cy, pz),  "t": (cx + hip_x, cy, knz), "p": "pelvis",  "cat": "limb_upper"},
         "shin_r":  {"h": (cx + hip_x, cy, knz), "t": (cx + hip_x, cy, anz), "p": "thigh_r", "cat": "limb_lower"},
-        "foot_r":  {"h": (cx + hip_x, cy, anz), "t": (cx + hip_x, cy - height*0.1, z0),"p": "shin_r", "cat": "extremity"},
+        "foot_r":  {"h": (cx + hip_x, cy, anz), "t": (cx + hip_x, cy - height*0.08, z0),"p": "shin_r", "cat": "extremity"},
     }
 
     # ─ Create Blender armature ───────────────────────────────────────────────────
@@ -516,10 +514,11 @@ def main():
         bpy.ops.object.join()
     mesh_obj = bpy.context.active_object
 
-    # ── Auto-Orientation ──────────────────────────────────────────────────
-    # If the mesh is "lying down" (horizontal span > vertical span), rotate it.
-    # This handles cases where trimesh or PyMeshLab flipped the axes.
+    # ── Center and Orient Mesh ────────────────────────────────────────────
+    # 1. Apply all transforms
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    
+    # 2. Auto-Orientation (already existing logic, but let's make it robust)
     bb = [mesh_obj.matrix_world @ Vector(corner) for corner in mesh_obj.bound_box]
     z_min = min(v.z for v in bb); z_max = max(v.z for v in bb); height = z_max - z_min
     y_min = min(v.y for v in bb); y_max = max(v.y for v in bb); depth  = y_max - y_min
@@ -534,7 +533,17 @@ def main():
          mesh_obj.rotation_euler[1] = math.radians(90)
          bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    print(f"[blender_auto_rig] Imported mesh: {mesh_obj.name}, "
+    # 3. Centering: Place character exactly at X=0, Y=0 (keep Z as is)
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    bb = [mesh_obj.matrix_world @ Vector(corner) for corner in mesh_obj.bound_box]
+    curr_cx = (min(v.x for v in bb) + max(v.x for v in bb)) * 0.5
+    curr_cy = (min(v.y for v in bb) + max(v.y for v in bb)) * 0.5
+    print(f"[blender_auto_rig] Centering mesh from ({curr_cx:.3f}, {curr_cy:.3f}) to (0, 0)")
+    mesh_obj.location.x -= curr_cx
+    mesh_obj.location.y -= curr_cy
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    print(f"[blender_auto_rig] Imported and centered mesh: {mesh_obj.name}, "
           f"{len(mesh_obj.data.vertices)} vertices, "
           f"{len(mesh_obj.data.polygons)} faces")
 
@@ -578,6 +587,13 @@ def main():
     with open(parsed.joints, "w") as f:
         json.dump(joints_list, f, indent=2)
     print(f"[blender_auto_rig] Joints saved: {len(joints_list)} bones → {parsed.joints}")
+
+    # Enable smooth shading on the mesh before export so the character looks
+    # smooth in viewers/engines regardless of polygon count.
+    for obj in bpy.context.selected_objects:
+        if obj.type == 'MESH':
+            obj.data.polygons.foreach_set("use_smooth", [True] * len(obj.data.polygons))
+            obj.data.update()
 
     # Export FBX
     bpy.ops.export_scene.fbx(

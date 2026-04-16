@@ -44,6 +44,14 @@ def convert(obj_path, glb_path):
                 elif 'Specular' in principled.inputs: # Older
                     principled.inputs['Specular'].default_value = 0.0
 
+    # Enable smooth shading so the mesh looks smooth in viewers/engines even at
+    # low polygon counts.  The GLB exporter stores per-vertex normals which
+    # implement smooth-shading in any compliant renderer.
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            obj.data.polygons.foreach_set("use_smooth", [True] * len(obj.data.polygons))
+            obj.data.update()
+
     # Export GLB
     bpy.ops.export_scene.gltf(
         filepath=glb_path,

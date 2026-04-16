@@ -13,20 +13,73 @@ NOTE: We only have 1 pipeline. Stage 2 uses FLUX.2-klein-4B (Text→Image) → B
 - [Setup Guide](memory/setup/setup_guide.md)
 
 ## Current State
-- **Status:** All 5 stages implemented and tested (121 tests passing).
-- **Date:** 2026-04-15
-- **Recent Actions (2026-04-15 tenth pass — Stage 4 robust rigging & axis fix):**
-  - **Fixed Stage 4 Axis Alignment:**
-    - Root cause: Pre-converting GLB to OBJ via trimesh was losing the Y-to-Z up conversion that Blender's GLTF importer handles natively. This caused characters to be "lying down" (Y-up) in Blender's Z-up world, making the vertical rigger slice them "front-to-back" instead of "head-to-toe".
-    - Fix: Removed `_glb_to_obj` pre-conversion. `blender_auto_rig.py` now imports the GLB directly via `bpy.ops.import_scene.gltf`.
-  - **Improved Arm/Limb Detection:**
-    - Root cause: Centroid-based limb detection was pulled towards large props (staffs, shields).
-    - Fix 1: Switched from centroid to **median-based cluster detection**. Median is robust to outliers like staffs sticking out further than the arm.
-    - Fix 2: Replaced Z-sorting with **Euclidean distance from shoulder attachment**. This correctly handles bent arms, raised arms, and combat poses where Z-sorting is meaningless.
-    - Fix 3: Improved anatomical proportions for neck, head, and feet.
-  - **Stage 3 "Holes" fix:**
-    - Increased `maxholesize` in `meshing_close_holes` from 30 to 100 to better handle TRELLIS.2's open bases or thin fused parts.
-  - **Validation:** Re-ran Shaman example. Skeleton now correctly aligns with the 1.0m height (Z-up), and arms correctly track the limbs despite the staff prop.
+- **Status:** All 5 stages implemented and tested (176 tests passing). Puppeteer fully verified end-to-end.
+- **Date:** 2026-04-16
+- **Recent Actions (2026-04-16 twenty-first pass — Direct GLB export + no transform_apply warping):**
+  - **Root cause of remaining see-through + material issues**: The FBX→GLB round-trip (`_convert_fbx_to_glb`) was fundamentally lossy — FBX Phong can't represent PBR materials, and the FBX importer's negative-scale coordinate flip corrupted winding even after `transform_apply`.
+  - **Fix**: Export GLB directly from `puppeteer_blend_export.py` in the same Blender session that imported the OBJ, bypassing FBX entirely for the GLB output. PBR materials, correct winding order (OBJ import is a pure rotation), and correct bone axes are all preserved.
+  - **`scripts/puppeteer_blend_export.py`**: Added `--output-glb` arg; after FBX export, also calls `bpy.ops.export_scene.gltf()` in the same session; normals+shade-smooth+material fixes applied before both exports.
+  - **`scripts/puppeteer_runner.py`**: Passes `--output-glb` to the Blender call.
+  - **`src/stage4_auto_rig.py`** (`_run_puppeteer`): Passes `--output-glb` to runner; falls back to `_convert_fbx_to_glb` only if direct GLB export is missing (belt-and-suspenders).
+  - **`scripts/fbx_to_glb.py`**: Now only used as fallback (heuristic Blender path / if direct export fails).
+  - **Mesh warping during animations fixed**: `blender_animate.py`'s `_fix_scene_meshes_and_materials` previously called `bpy.ops.object.transform_apply(rotation=True, scale=True)`. For GLTF-imported skinned meshes this baked the Y→Z rotation into vertex positions while bone positions remained unchanged → vertices moved off bones → warping. Fix: completely removed `transform_apply` from `blender_animate.py`.
+  - **176 tests passing** (9 new: `TestPuppeteerBlendExportGlb` × 7 + `TestStage4PuppeteerWiring.test_puppeteer_path_passes_output_glb_to_runner` + `test_no_transform_apply_on_skinned_mesh`)
+- **Recent Actions (2026-04-16 twentieth pass — Fix see-through mesh + flexible animations):**
+  - **See-through root cause identified**: FBX import applies a negative scale on one axis for Y-up → Z-up coordinate correction. `normals_make_consistent` alone doesn't fix this because the winding is flipped in world space by the scale transform. Fix chain: (1) `transform_apply(scale=True)` bakes negative scale into vertex positions, correcting winding order; (2) `normals_make_consistent(inside=False)` fixes any residual inward faces; (3) `use_backface_culling=False` on all materials → `doubleSided:true` in GLTF as belt-and-suspenders.
+  - **`scripts/fbx_to_glb.py`** updated with `transform_apply` + double-sided.
+  - **Flexible animation system (`blender_animate.py` rewritten)**:
+    - Old system hardcoded heuristic-rigger bone names (`spine_02`, `upper_arm_l`, etc.) → zero keyframes on Puppeteer skeletons.
+    - New system: `classify_skeleton(joints)` analyses joint positions and hierarchy geometry to map each joint to a semantic role (`pelvis`, `spine_mid`, `head`, `left_upper_arm`, `right_forearm`, `left_thigh`, etc.) with no name assumptions.
+    - All animation builders (`build_idle`, `build_walk`, `build_attack_*`) use semantic roles via `rot(arm, 'role_name', roles, frame, ...)` helper.
+    - Verified on shaman: 20/20 roles mapped correctly. `joint14→pelvis`, `joint17→spine_mid`, `joint21→head`, `joint8→left_upper_arm`, `joint25→right_upper_arm`, `joint11→left_thigh`, etc.
+  - **167 tests passing** (6 new: `TestFbxToGlbScript.test_applies_transform_before_normals`, `test_sets_doublesided`, `TestBlenderAnimateFixup.test_uses_semantic_roles_not_hardcoded_names`, `test_classify_skeleton_pure_python`, `test_classify_skeleton_maps_shaman`, `test_sets_doublesided`)
+- **Recent Actions (2026-04-16 nineteenth pass — Fix see-through / glistening final GLB):**
+  - **Root cause (partial):** `_convert_fbx_to_glb()` was a bare inline `--python-expr` — no normals, no shade smooth, no material fix.
+  - **`scripts/fbx_to_glb.py`** created: normals + shade smooth + material roughness fix.
+  - **HC-Laplacian fix**: called with no arguments (beta param not supported by installed pymeshlab).
+  - **161 tests passing**
+- **Recent Actions (2026-04-16 eighteenth pass — Proper rigging + smooth meshes):**
+  - **34-joint rig achieved** (`rigging_method=puppeteer`, 34 joints, all 3 Puppeteer sub-stages working)
+  - **Root causes of 2-joint degenerate skeleton (all fixed):**
+    1. `--apply_marching_cubes` was missing from skeleton Stage 1 call. Semi-voxel/blocky meshes produce degenerate point clouds; MC smooths the surface first → 2 joints → 27-34 joints
+    2. `flash_attn` not installed (CUDA 13.2 mismatch with torch's CUDA 11.8). Fixed by installing prebuilt wheel: `flash_attn-2.6.3+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl` from `Dao-AILab/flash-attention` GitHub releases
+    3. Puppeteer's `export.py` was stripping UV/textures (used `from_pydata()` without UV). Replaced by `scripts/puppeteer_blend_export.py` which uses Blender's OBJ importer (preserves UV+materials) and applies skin weights via position-based vertex mapping
+    4. MTL/PNG sidecars not copied alongside OBJ into tmp_puppeteer/examples. Fixed in `puppeteer_runner.py` to copy all `.mtl/.png/.jpg` files
+    5. `pytorch3d` compilation skipped (not needed by skeleton/skinning/export; only by animation/ which we don't use)
+  - **Mesh smoothing improvements:**
+    - Stage 3: Taubin smoothing increased from 10 → 30 iterations; HC-Laplacian smoothing added as second pass (no-param call)
+    - `obj_to_glb.py`, `puppeteer_blend_export.py`, `blender_auto_rig.py`: shade-smooth enabled on all exported meshes (stored as smooth vertex normals in GLB)
+  - **146 tests passing**
+- **Recent Actions (2026-04-15 seventeenth pass — Puppeteer fully working end-to-end):**
+  - **Verified Puppeteer runs all 3 sub-stages successfully** (`rigging_method=puppeteer` confirmed in stage4_output.json)
+  - **Runtime bugs discovered and fixed (all in external/Puppeteer + scripts):**
+    1. `skeletongen.py`: `flash_attn` optional — falls back to `_ATTN_IMPL="eager"` when not compiled
+    2. `skeleton_opt.py`: Added eager 4D causal mask via `_prepare_4d_causal_attention_mask` (was `raise ValueError`)
+    3. `export.py`: Blender argparse fix — parse `sys.argv` after `--` separator (Blender injects own flags before script args)
+    4. `skinning/third_partys/Michelangelo`: Added symlink → `skeleton/third_partys/Michelangelo` (runner auto-creates; setup script creates)
+    5. `torch-scatter` added to `.venv_puppeteer` install step in `setup_puppeteer.sh`
+    6. `puppeteer_runner.py`: Strip `VIRTUAL_ENV`, `VIRTUAL_ENV_PROMPT`, `PYTHONPATH` from env to prevent `.venv` (Python 3.13) contaminating `.venv_puppeteer` (Python 3.10) torchrun workers
+- **Recent Actions (2026-04-15 sixteenth pass — Puppeteer properly wired as primary rigger):**
+  - **Fixed Puppeteer Integration (properly this time):**
+    - Root cause 1: `run_stage4()` passed `puppeteer_dir=""` (empty string) to `_run_puppeteer()`, so Puppeteer could never find its checkpoints. Fix: added `_PUPPETEER_DIR = _PROJECT_ROOT / "external" / "Puppeteer"` as a module-level constant; removed `puppeteer_dir` parameter entirely from `run_stage4()` and `run_pipeline()`.
+    - Root cause 2: `puppeteer_runner.py` looked for skinning checkpoint at `puppeteer_dir/skinning_ckpts/` but the actual location is `puppeteer_dir/skinning/skinning/skinning_ckpts/`. Fix: added `_find_checkpoint()` helper with prioritised candidate paths for both skeleton and skinning.
+    - Root cause 3: Runner used system `torchrun` (not in PATH). Fix: derive `torchrun_bin = Path(sys.executable).parent / "torchrun"` from the venv that invokes the script.
+    - Root cause 4: Dead validation block in `run_stage4()` calling `scripts/validate_rigging_enhanced.py` (which never existed). Removed.
+  - **New tests added (24 new tests → 145 total):**
+    - `TestPuppeteerRunner` — structural checks on `puppeteer_runner.py` (venv torchrun path, checkpoint discovery strings, joint_token/seq_shuffle/post_filter flags, cleanup).
+    - `TestPuppeteerInstall` — verifies all Puppeteer artefacts on disk (venv, torchrun, both checkpoints, Michelangelo ckpt, script files).
+    - `TestStage4PuppeteerWiring` — verifies `run_stage4` signature has no `puppeteer_dir` param, auto-detect constants present, Puppeteer attempted before Blender fallback.
+  - **Cleaned up:**
+    - Removed `--puppeteer-dir` CLI argument from `main.py` (auto-detected at module level now).
+    - Removed dead `validate_rigging_enhanced.py` invocation.
+- **Earlier (2026-04-15 fourteenth pass — Robust Agnostic Rigging):**
+  - **Improved Rigging Heuristic Accuracy:**
+    - Fix 1: Added **Character Centering**. The mesh is now automatically centered at X=0, Y=0 before analysis. This ensures the spine and pelvis are perfectly vertical and symmetrical.
+    - Fix 2: Switched to **Density-Based Limb Detection**. Instead of simple spatial slices, the rigger now uses median-based clusters and 3D distance analysis to find the "core" of the limbs, making it much more robust to large props (staffs, shields) and non-standard poses.
+    - Fix 3: Refined **Humanoid Proportions**. Adjusted bone heights and shoulder attachment points to better match common humanoid archetypes while remaining agnostic to the specific character design.
+    - Fix 4: Improved **Symmetry Handling**. Legs are now forced to be symmetrical around the character's center, preventing "leg drift" caused by asymmetric accessories.
+  - **Updated Rigging Tests:**
+    - Adjusted `test_stage4_auto_rig.py` to reflect the new centering logic and tighter symmetry requirements.
 - **Earlier (2026-04-15 thirteenth pass — Fixed shininess and smoothness):**
   - **Removed GLB "Shininess":**
     - Root cause: Blender's OBJ importer defaults to a glossy Principled BSDF when PBR properties are missing from the MTL.

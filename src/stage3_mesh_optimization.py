@@ -275,14 +275,26 @@ def _repair_and_decimate(
     final_faces = ms.current_mesh().face_number()
     print(f"[Stage 3] Final face count: {final_faces}")
 
-    # ── Post-decimation smoothing ────────────────────────────────────────────
-    # Taubin smoothing removes QEC staircase artefacts without shrinking the
-    # mesh.  Increasing iterations (10) for better smoothness on low-poly targets.
-    print("[Stage 3] Applying Taubin smoothing (10 iterations) …")
-    ms.apply_coord_taubin_smoothing(lambda_=0.5, mu=-0.53, stepsmoothnum=10)
-    
-    # Recalculate vertex normals to ensure smooth shading across the mesh,
-    # avoiding the "facetted" look.
+    # ── Post-decimation smoothing ─────────────────────────────────────────────
+    # Two-pass smoothing approach:
+    #   Pass 1 — Taubin smoothing: fast, volume-preserving, removes QEC staircase
+    #            artefacts.  λ=0.5, μ=-0.53 is the canonical low-shrink setting.
+    #   Pass 2 — HC-Laplacian smoothing: more aggressive surface smoothing while
+    #            also preserving original vertex positions.  Together the two
+    #            passes give MC-quality smoothness without geometry distortion.
+    #            This filter takes no parameters in the installed pymeshlab version.
+    # UV (wedge tex-coords) are stored per-face-corner and are NOT moved by either
+    # algorithm — textures remain perfectly aligned after smoothing.
+    print("[Stage 3] Applying Taubin smoothing (30 iterations) …")
+    ms.apply_coord_taubin_smoothing(lambda_=0.5, mu=-0.53, stepsmoothnum=30)
+
+    print("[Stage 3] Applying HC-Laplacian smoothing …")
+    try:
+        ms.apply_coord_hc_laplacian_smoothing()
+    except Exception as e:
+        print(f"[Stage 3] HC-Laplacian unavailable ({e}); skipping second pass.")
+
+    # Recompute smooth vertex normals so the mesh shades correctly everywhere.
     ms.compute_normal_per_vertex()
 
     # ── Export OBJ → Blender → GLB ──────────────────────────────────────────

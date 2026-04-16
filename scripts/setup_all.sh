@@ -43,6 +43,10 @@ if [[ $MOCK_ONLY -eq 0 ]]; then
     [[ $SKIP_COMPILE -eq 1 ]] && COMPILE_FLAG="--skip-compile"
     echo "[setup_all] Setting up Puppeteer …"
     bash "$SCRIPT_DIR/setup_puppeteer.sh" $COMPILE_FLAG
+
+    # Ensure Blender's python has trimesh and numpy for Puppeteer's export.py
+    echo "[setup_all] Installing trimesh and numpy for Blender's python …"
+    uv pip install trimesh numpy==1.26.4 --python /usr/bin/python3.12 --target ~/.local/lib/python3.12/site-packages
 else
     echo "[setup_all] Mock-only mode: skipping ML dependencies and Puppeteer setup."
 fi

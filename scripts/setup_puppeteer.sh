@@ -6,14 +6,14 @@
 # Python 3.10 venv at .venv_puppeteer/ with required dependencies.
 #
 # Puppeteer requires Python 3.10.13 with PyTorch 2.1.1 specifically.
-# flash-attn and pytorch3d are compiled from source — this takes 15-30 mins.
+# flash-attn is installed from a prebuilt wheel (no compilation required).
+# pytorch3d is skipped (not needed by the skeleton/skinning/export stages).
 #
 # Usage:
-#   ./scripts/setup_puppeteer.sh [--skip-clone] [--skip-compile]
+#   ./scripts/setup_puppeteer.sh [--skip-clone]
 #
 # Options:
 #   --skip-clone    Skip git clone if external/Puppeteer already exists.
-#   --skip-compile  Skip compiling flash-attn / pytorch3d (faster, less features).
 # =============================================================================
 set -euo pipefail
 
@@ -24,10 +24,8 @@ PUPPETEER_DIR="$EXTERNAL_DIR/Puppeteer"
 VENV="$PROJECT_DIR/.venv_puppeteer"
 
 SKIP_CLONE=0
-SKIP_COMPILE=0
 for arg in "$@"; do
-    [[ "$arg" == "--skip-clone" ]]   && SKIP_CLONE=1
-    [[ "$arg" == "--skip-compile" ]] && SKIP_COMPILE=1
+    [[ "$arg" == "--skip-clone" ]] && SKIP_CLONE=1
 done
 
 echo "=== Puppeteer Setup ==="
@@ -75,24 +73,39 @@ if [[ -f "requirements.txt" ]]; then
     uv pip install --python "$PYTHON" "huggingface_hub"
 fi
 
-# ── 5. Install pytorch3d (compiled from source) ───────────────────────────────
-if [[ $SKIP_COMPILE -eq 0 ]]; then
-    echo "[setup_puppeteer] Installing pytorch3d (compiling from source, ~15 min) …"
-    uv pip install --python "$PYTHON" \
-        "git+https://github.com/facebookresearch/pytorch3d.git@stable"
-else
-    echo "[setup_puppeteer] Skipping pytorch3d compilation (--skip-compile)"
+# ── 5. Install torch-scatter (required by skinning/PartField) ─────────────────
+echo "[setup_puppeteer] Installing torch-scatter for skinning …"
+uv pip install --python "$PYTHON" \
+    torch-scatter \
+    --find-links "https://data.pyg.org/whl/torch-2.1.1+cu118.html"
+
+# ── 6. Create Michelangelo symlink in skinning/third_partys/ ──────────────────
+# skinning_models/models.py imports third_partys.Michelangelo, but Michelangelo
+# only lives under skeleton/third_partys/. Create a symlink so it resolves.
+MICH_SRC="$PUPPETEER_DIR/skeleton/third_partys/Michelangelo"
+MICH_LINK="$PUPPETEER_DIR/skinning/third_partys/Michelangelo"
+if [[ -d "$MICH_SRC" ]] && [[ ! -e "$MICH_LINK" ]]; then
+    echo "[setup_puppeteer] Symlinking Michelangelo into skinning/third_partys/ …"
+    ln -s "$MICH_SRC" "$MICH_LINK"
+elif [[ -e "$MICH_LINK" ]]; then
+    echo "[setup_puppeteer] Michelangelo symlink already exists"
 fi
 
-# ── 6. Install flash-attn ─────────────────────────────────────────────────────
-if [[ $SKIP_COMPILE -eq 0 ]]; then
-    echo "[setup_puppeteer] Installing flash-attn (compiling, ~10 min) …"
-    FLASH_ATTN_FORCE_BUILD=TRUE uv pip install --python "$PYTHON" flash-attn --no-build-isolation
-else
-    echo "[setup_puppeteer] Skipping flash-attn compilation (--skip-compile)"
-fi
+# ── 7. pytorch3d ─────────────────────────────────────────────────────────────
+# pytorch3d is only used by Puppeteer's animation/ module which this pipeline
+# does not invoke (we use Blender for animation in Stage 5).  Compiling from
+# source requires nvcc matching torch's CUDA (11.8), which fails when the
+# system has a newer CUDA toolkit.  Skip it.
+echo "[setup_puppeteer] Skipping pytorch3d (not used by skeleton/skinning/export stages)."
 
-# ── 7. Download Puppeteer checkpoint ─────────────────────────────────────────
+# ── 8. Install flash-attn (prebuilt wheel for cu118 + torch 2.1 + py310) ──────
+# Compiling from source requires nvcc version to match torch's CUDA (11.8),
+# but the system may have a newer nvcc.  Use the official prebuilt wheel instead.
+echo "[setup_puppeteer] Installing flash-attn 2.6.3 (prebuilt wheel, cu118+torch2.1) …"
+uv pip install --python "$PYTHON" \
+    "https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3%2Bcu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+
+# ── 9. Download Puppeteer checkpoints ────────────────────────────────────────
 CKPT_DIR="$PUPPETEER_DIR/skeleton_ckpts"
 CKPT_FILE="$CKPT_DIR/puppeteer_skeleton_w_diverse_pose.pth"
 mkdir -p "$CKPT_DIR"

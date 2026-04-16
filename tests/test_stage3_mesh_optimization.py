@@ -300,3 +300,34 @@ class TestGLBInputPreference:
         # Mock always returns 12 faces (cube)
         assert result.face_count > 0
         assert result.face_count < 10_000
+
+
+# ─── Smoothing pass checks ────────────────────────────────────────────────────
+
+class TestSmoothing:
+    """Verify the two-pass post-decimation smoothing in _repair_and_decimate."""
+
+    def _src(self) -> str:
+        return inspect.getsource(_repair_and_decimate)
+
+    def test_taubin_smoothing_30_iterations(self):
+        """Taubin smoothing must use 30 iterations."""
+        src = self._src()
+        assert "apply_coord_taubin_smoothing" in src
+        assert "stepsmoothnum=30" in src
+
+    def test_hc_laplacian_called_with_no_params(self):
+        """HC-Laplacian smoothing must be called with no arguments.
+        This pymeshlab version accepts only default parameters for this filter."""
+        src = self._src()
+        assert "apply_coord_hc_laplacian_smoothing()" in src
+
+    def test_hc_laplacian_has_fallback(self):
+        """HC-Laplacian must be wrapped in try/except so a missing filter
+        does not abort the pipeline."""
+        src = self._src()
+        assert "apply_coord_hc_laplacian_smoothing" in src
+        # try ... except pattern around HC call
+        hc_idx = src.index("apply_coord_hc_laplacian_smoothing")
+        pre = src[max(0, hc_idx - 200):hc_idx]
+        assert "try:" in pre or "try :" in pre

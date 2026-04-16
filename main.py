@@ -60,7 +60,6 @@ def run_pipeline(
     quality: str = "standard",
     target_faces: int | None = None,
     mock: bool = False,
-    puppeteer_dir: str = "external/Puppeteer",
 ) -> dict:
     """
     Run the full mesh-gen pipeline.
@@ -157,7 +156,6 @@ def run_pipeline(
         s4 = run_stage4(
             stage3_output=s3_out,
             output_dir=output_dir,
-            puppeteer_dir=puppeteer_dir,
             mock=mock,
         )
         _save_json(output_dir, output_name, 4, s4.model_dump())
@@ -257,8 +255,6 @@ def main() -> None:
                         help="Override target face count for Stage 3")
     parser.add_argument("--mock", action="store_true",
                         help="Run all stages in mock mode (no GPU required)")
-    parser.add_argument("--puppeteer-dir", type=str, default="external/Puppeteer",
-                        help="Path to Puppeteer clone (default: external/Puppeteer)")
     args = parser.parse_args()
 
     print(f"\nMesh-Gen-Pipeline")
@@ -276,7 +272,6 @@ def main() -> None:
         quality=args.quality,
         target_faces=args.faces,
         mock=args.mock,
-        puppeteer_dir=args.puppeteer_dir,
     )
 
     _print_summary(results, args.output_dir, args.output_name)
