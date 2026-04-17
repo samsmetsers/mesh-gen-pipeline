@@ -21,34 +21,18 @@ def convert(obj_path, glb_path):
         up_axis='Y'
     )
 
-    # ── Remove shininess ──────────────────────────────────────────────────
-    # Standard OBJ/MTL from PyMeshLab doesn't define PBR properties (Roughness/Metallic).
-    # Blender's importer defaults to Principled BSDF with low roughness (0.5) 
-    # and 0 metallic, but it can appear very shiny depending on the environment.
-    # We force high roughness (matte look) to match the "uniform" stage 2 look.
-    for mat in bpy.data.materials:
-        if mat.use_nodes:
-            nodes = mat.node_tree.nodes
-            principled = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
-            if principled:
-                # Set Roughness to 0.8 (Matte)
-                # In Blender 4.0+, the index for Roughness is usually 9, 
-                # but accessing by name or internal data is safer.
-                if 'Roughness' in principled.inputs:
-                    principled.inputs['Roughness'].default_value = 0.8
-                if 'Metallic' in principled.inputs:
-                    principled.inputs['Metallic'].default_value = 0.0
-                # Set Specular to 0 for extra uniformity
-                if 'Specular IOR Level' in principled.inputs: # Blender 4.0+
-                    principled.inputs['Specular IOR Level'].default_value = 0.0
-                elif 'Specular' in principled.inputs: # Older
-                    principled.inputs['Specular'].default_value = 0.0
-
+    # ── Smooth Shading ──────────────────────────────────────────────────
     # Enable smooth shading so the mesh looks smooth in viewers/engines even at
-    # low polygon counts.  The GLB exporter stores per-vertex normals which
+    # low polygon counts. The GLB exporter stores per-vertex normals which
     # implement smooth-shading in any compliant renderer.
+    # We also clear any imported custom split normals (from the OBJ) so that
+    # the smooth shading can take effect properly.
     for obj in bpy.data.objects:
         if obj.type == 'MESH':
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode='OBJECT')
+            if obj.data.has_custom_normals:
+                bpy.ops.mesh.customdata_custom_splitnormals_clear()
             obj.data.polygons.foreach_set("use_smooth", [True] * len(obj.data.polygons))
             obj.data.update()
 

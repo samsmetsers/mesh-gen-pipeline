@@ -502,26 +502,15 @@ def _fix_scene_meshes_and_materials():
         if obj.type != 'MESH':
             continue
         # Shade smooth (visual quality — safe on skinned meshes)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode='OBJECT')
+        if obj.data.has_custom_normals:
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
         obj.data.polygons.foreach_set("use_smooth", [True] * len(obj.data.polygons))
         obj.data.update()
 
     for mat in bpy.data.materials:
         mat.use_backface_culling = False   # doubleSided:true in GLTF
-        if not mat.use_nodes:
-            continue
-        principled = next(
-            (n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None
-        )
-        if principled is None:
-            continue
-        if 'Roughness' in principled.inputs:
-            principled.inputs['Roughness'].default_value = 0.8
-        if 'Metallic' in principled.inputs:
-            principled.inputs['Metallic'].default_value = 0.0
-        if 'Specular IOR Level' in principled.inputs:
-            principled.inputs['Specular IOR Level'].default_value = 0.0
-        elif 'Specular' in principled.inputs:
-            principled.inputs['Specular'].default_value = 0.0
 
 
 # ---------------------------------------------------------------------------

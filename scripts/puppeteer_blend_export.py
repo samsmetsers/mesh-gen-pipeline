@@ -272,19 +272,6 @@ def main():
 
     for mat in bpy.data.materials:
         mat.use_backface_culling = False
-        if not mat.use_nodes:
-            continue
-        principled = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
-        if principled is None:
-            continue
-        if 'Roughness' in principled.inputs:
-            principled.inputs['Roughness'].default_value = 0.8
-        if 'Metallic' in principled.inputs:
-            principled.inputs['Metallic'].default_value = 0.0
-        if 'Specular IOR Level' in principled.inputs:
-            principled.inputs['Specular IOR Level'].default_value = 0.0
-        elif 'Specular' in principled.inputs:
-            principled.inputs['Specular'].default_value = 0.0
 
     # ── Export FBX ────────────────────────────────────────────────────────────
     bpy.ops.export_scene.fbx(
@@ -298,6 +285,28 @@ def main():
 
     # ── Export GLB directly (bypasses the FBX → GLB round-trip) ─────────────
     # Exporting GLB from the same Blender session that imported the OBJ gives:
+    #   1. Correct PBR materials (no lossy FBX Phong round-trip)
+    #   2. Correct winding order (OBJ import is a pure rotation, no scale flip)
+    #   3. Correct bone axes (no FBX coordinate transform re-applied)
+    # This GLB becomes final.glb (Stage 4 output) and is what Stage 5 animates.
+    if args.output_glb:
+        bpy.ops.export_scene.gltf(
+            filepath=args.output_glb,
+            export_format='GLB',
+            export_image_format='AUTO',
+            export_texcoords=True,
+            export_normals=True,
+            export_materials='EXPORT',
+            export_animations=False,
+        )
+        print(f"[puppeteer_blend_export] GLB exported to {args.output_glb}")
+
+    print(f"[puppeteer_blend_export] Done.")
+
+
+if __name__ == "__main__":
+    main()
+GLB from the same Blender session that imported the OBJ gives:
     #   1. Correct PBR materials (no lossy FBX Phong round-trip)
     #   2. Correct winding order (OBJ import is a pure rotation, no scale flip)
     #   3. Correct bone axes (no FBX coordinate transform re-applied)

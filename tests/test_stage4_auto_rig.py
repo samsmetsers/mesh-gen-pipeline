@@ -789,10 +789,8 @@ class TestPuppeteerBlendExportGlb:
         assert "use_backface_culling" in src
         assert "False" in src
 
-    def test_fixes_material_roughness(self):
-        src = self._src()
-        assert "Roughness" in src
-        assert "0.8" in src
+
+
 
 
 # ─── fbx_to_glb.py structural checks ──────────────────────────────────────────
@@ -840,14 +838,7 @@ class TestFbxToGlbScript:
         assert "use_smooth" in src
         assert "foreach_set" in src
 
-    def test_fixes_roughness(self):
-        src = self._src()
-        assert "Roughness" in src
-        assert "0.8" in src
 
-    def test_fixes_metallic(self):
-        src = self._src()
-        assert "Metallic" in src
 
     def test_exports_with_normals(self):
         src = self._src()
@@ -897,10 +888,8 @@ class TestBlenderAnimateFixup:
         src = self._src()
         assert "use_smooth" in src
 
-    def test_fixes_material_roughness(self):
-        src = self._src()
-        assert "Roughness" in src
-        assert "0.8" in src
+
+
 
     def test_exports_with_normals(self):
         src = self._src()

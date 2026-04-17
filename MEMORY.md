@@ -13,8 +13,15 @@ NOTE: We only have 1 pipeline. Stage 2 uses FLUX.2-klein-4B (Text→Image) → B
 - [Setup Guide](memory/setup/setup_guide.md)
 
 ## Current State
-- **Status:** All 5 stages implemented and tested (176 tests passing). Puppeteer fully verified end-to-end.
-- **Date:** 2026-04-16
+- **Status:** All 5 stages implemented and tested (171 tests passing). Puppeteer fully verified end-to-end.
+- **Date:** 2026-04-17
+- **Recent Actions (2026-04-17 twenty-second pass — Fix mesh blockiness and material vibrance):**
+  - **Root cause of blocky mesh**: PyMeshLab decimation exports OBJ with vertex normals that become custom split normals in Blender. These custom normals override Blender's `use_smooth` polygon setting, leading to a faceted appearance on the low-poly mesh.
+  - **Root cause of dull colors**: Previous passes artificially forced the material to `Roughness=0.8` and `Specular=0.0` or `Metallic=0.0` to remove FBX-induced shininess. This overly matte setting washed out the natural vibrance of the Trellis PBR output.
+  - **Fixes applied**:
+    - **`scripts/obj_to_glb.py`**, **`scripts/puppeteer_blend_export.py`**, **`scripts/blender_auto_rig.py`**, **`scripts/fbx_to_glb.py`**, **`scripts/blender_animate.py`**: Added `bpy.ops.mesh.customdata_custom_splitnormals_clear()` before setting `use_smooth=True`. This allows Blender to dynamically compute smooth normals based on the geometry, creating a genuinely smooth mesh.
+    - Removed all material overrides forcing `Roughness` and `Specular` across the five Blender scripts to restore the original vibrant colors of the Trellis raw output.
+  - **171 tests passing** (removed obsolete roughness tests)
 - **Recent Actions (2026-04-16 twenty-first pass — Direct GLB export + no transform_apply warping):**
   - **Root cause of remaining see-through + material issues**: The FBX→GLB round-trip (`_convert_fbx_to_glb`) was fundamentally lossy — FBX Phong can't represent PBR materials, and the FBX importer's negative-scale coordinate flip corrupted winding even after `transform_apply`.
   - **Fix**: Export GLB directly from `puppeteer_blend_export.py` in the same Blender session that imported the OBJ, bypassing FBX entirely for the GLB output. PBR materials, correct winding order (OBJ import is a pure rotation), and correct bone axes are all preserved.

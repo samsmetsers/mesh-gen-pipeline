@@ -70,30 +70,47 @@ def _fix_mesh(obj) -> None:
 
 
 def _fix_materials() -> None:
-    """Force matte PBR values and double-sided rendering on every material.
+    """Force double-sided rendering on every material.
 
     doubleSided=true (use_backface_culling=False) is the belt-and-suspenders
     guard: even if a viewer ignores winding order, both sides are visible.
-    Roughness=0.8 / Metallic=0.0 / Specular=0.0 prevents the glistening
-    look caused by FBX Phong → Principled BSDF reconstruction with low Ns.
     """
     for mat in bpy.data.materials:
         # Double-sided: GLTF exports this as doubleSided:true
         mat.use_backface_culling = False
 
-        if not mat.use_nodes:
-            continue
-        principled = next(
-            (n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'),
-            None,
-        )
-        if principled is None:
-            continue
-        if 'Roughness' in principled.inputs:
-            principled.inputs['Roughness'].default_value = 0.8
-        if 'Metallic' in principled.inputs:
-            principled.inputs['Metallic'].default_value = 0.0
-        if 'Specular IOR Level' in principled.inputs:
+
+def main() -> None:
+    args = _parse_args()
+
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+
+    print(f"[fbx_to_glb] Importing {args.input}")
+    bpy.ops.import_scene.fbx(filepath=args.input)
+
+    for obj in list(bpy.data.objects):
+        if obj.type == 'MESH':
+            _fix_mesh(obj)
+
+    _fix_materials()
+
+    print(f"[fbx_to_glb] Exporting {args.output}")
+    bpy.ops.export_scene.gltf(
+        filepath=args.output,
+        export_format='GLB',
+        export_image_format='AUTO',
+        export_texcoords=True,
+        export_normals=True,
+        export_materials='EXPORT',
+        export_animations=True,
+    )
+    print("[fbx_to_glb] Done.")
+
+
+if __name__ == "__main__":
+    main()
+'Specular IOR Level' in principled.inputs:
             principled.inputs['Specular IOR Level'].default_value = 0.0
         elif 'Specular' in principled.inputs:
             principled.inputs['Specular'].default_value = 0.0

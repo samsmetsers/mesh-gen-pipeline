@@ -592,6 +592,10 @@ def main():
     # smooth in viewers/engines regardless of polygon count.
     for obj in bpy.context.selected_objects:
         if obj.type == 'MESH':
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode='OBJECT')
+            if obj.data.has_custom_normals:
+                bpy.ops.mesh.customdata_custom_splitnormals_clear()
             obj.data.polygons.foreach_set("use_smooth", [True] * len(obj.data.polygons))
             obj.data.update()
 
