@@ -1,0 +1,93 @@
+import os
+import json
+from typing import Optional, List, Literal
+from pydantic import BaseModel, Field
+
+class ParsedPrompt(BaseModel):
+    character_description: str = Field(description="The core description of the character's body, clothing, and appearance without style tags.")
+    rigid_object: Optional[str] = Field(description="Any rigid object the character is holding or wearing that should not deform (e.g., staff, sword, mask).", default=None)
+    animation_type: Literal["idle", "walk", "attack"] = Field(description="The inferred type of animation based on stance or action in the prompt. Must be 'idle', 'walk', or 'attack'.")
+    style_tags: List[str] = Field(description="Style or technical tags like 'low-poly', 'game-ready', 'mobile-optimized', 'semi-voxel'.")
+
+
+# ---------------------------------------------------------------------------
+# Prompt wrapper — enforces semi-voxel game-art style for all characters
+# ---------------------------------------------------------------------------
+
+_STYLE_PREFIX = (
+    "Semi-voxel stylized game character — blocky rounded proportions, "
+    "exaggerated but readable features, suitable for hybrid mobile/PC games: "
+)
+_STYLE_SUFFIX = (
+    ". Semi-voxel art style (think Clash of Clans / Fortnite proportions), "
+    "game-ready humanoid character in neutral T-pose, full body, "
+    "optimised for real-time 3D rendering."
+)
+
+def wrap_prompt(prompt: str) -> str:
+    """
+    Wraps any character prompt with semi-voxel game-art context and
+    standard character-generation framing for hybrid mobile/PC games.
+
+    Applied before the LLM call (Stage 1) so the parsed description and
+    style_tags are already art-directed. Stage 2 expands the style_tags
+    further into concrete SDXL keywords via _build_image_prompt().
+    """
+    return _STYLE_PREFIX + prompt.strip(" .") + _STYLE_SUFFIX
+
+
+def parse_prompt(prompt: str) -> ParsedPrompt:
+    """Parses a natural language prompt into a structured JSON format."""
+    from huggingface_hub import InferenceClient
+    
+    client = InferenceClient(model="meta-llama/Llama-3.3-70B-Instruct")
+    
+    schema_desc = ParsedPrompt.model_json_schema()
+    
+    system_prompt = f'''You are a 3D asset generation assistant. 
+Extract the core character description, any rigid object (like weapons or staves), the required animation type (strictly 'idle', 'walk', or 'attack'), and style tags from the user's prompt.
+You MUST output valid JSON matching the following JSON schema:
+{json.dumps(schema_desc, indent=2)}
+'''
+
+    # Apply semi-voxel game-art wrapper before sending to LLM
+    wrapped = wrap_prompt(prompt)
+
+    response = client.chat_completion(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Parse this prompt: {wrapped}"}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+    )
+    
+    content = response.choices[0].message.content
+    if not content:
+        raise ValueError("Received empty response from LLM.")
+        
+    try:
+        data = json.loads(content)
+        # Handle case where some local LLMs nest the output under a key if not properly tuned
+        if "ParsedPrompt" in data and isinstance(data["ParsedPrompt"], dict):
+            data = data["ParsedPrompt"]
+        return ParsedPrompt(**data)
+    except Exception as e:
+        raise ValueError(f"Failed to parse LLM output into ParsedPrompt: {content}") from e
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Stage 1: Prompt Parsing")
+    parser.add_argument("prompt", type=str, help="The natural language prompt")
+    parser.add_argument("--output", type=str, default="output/parsed_prompt.json", help="Path to save the JSON output")
+    args = parser.parse_args()
+    
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    
+    result = parse_prompt(args.prompt)
+    
+    with open(args.output, "w") as f:
+        f.write(result.model_dump_json(indent=2))
+        
+    print(f"Successfully parsed prompt and saved to {args.output}")
+    print(result.model_dump_json(indent=2))

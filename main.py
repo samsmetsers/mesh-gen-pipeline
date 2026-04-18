@@ -1,213 +1,271 @@
 """
-Mesh Generation & Animation Pipeline
-=====================================
-Stage 1: Vision Prior (FLUX)        - Text → 2D reference image
-Stage 2: 3D Generation (TRELLIS.2)  - Image → raw 3D mesh
-Stage 3: Mesh Refinement            - Taubin Smooth + Topology-Preserved Retopo
-Stage 4: Character Rigging & Animation
-  4a: Prop Segmentation             - Separate body and props
-  4b: Universal Rigging (UniRig)    - body.obj → rigged_body.glb
-  4c: Motion Generation             - Text → walk/attack animations
-  4d: Final Assembly (Blender)      - Rig + props + TRELLIS color → .fbx/.glb
+Mesh-Gen-Pipeline — Main Orchestrator
+========================================
+Runs all stages of the prompt-to-3D-rigged-character pipeline in sequence.
+
+Stages:
+  1. Prompt Parsing   — text → parsed JSON
+  2. Text-to-3D       — parsed JSON  → raw OBJ/GLB
+  3. Mesh Optimization— raw GLB → repaired & decimated GLB (PyMeshLab)
+  4. Auto-Rigging     — GLB  → rigged FBX + joints.json (UniRig + P3-SAM)
+  5. Animation        — Rigged GLB → animated GLB (MotionGPT3)
 
 Usage:
-  python main.py --prompt "A deer with antlers" --output_name deer
-  python main.py --prompt "A warrior with a sword" --stage 3 4 --output_name warrior
-  python main.py --prompt "quadruped beast walking" --stage 4 --output_name beast
+  # Mock mode (no GPU, tests the full pipeline):
+  uv run python main.py --prompt "..." --mock -n character
+
+Output structure:
+  output/<name>/
+  ├── <name>_rigged.fbx         ← Stage 4 primary output
+  ├── <name>_final.glb          ← Stage 4 secondary output
+  ├── <name>_animated.glb       ← Stage 5 output
+  └── intermediate/
+      ├── parsed_prompt.json    ← Stage 1
+      ├── <name>_raw.obj        ← Stage 2
+      ├── <name>_raw.glb        ← Stage 2
+      ├── <name>_refined.glb    ← Stage 3
+      ├── joints.json           ← Stage 4
+      ├── stage1_output.json
+      ├── stage2_output.json
+      ├── stage3_output.json
+      ├── stage4_output.json
+      └── stage5_output.json
 """
-import os
-import sys
+
+from __future__ import annotations
+
 import argparse
-import subprocess
-import shutil
+import json
+import time
+from pathlib import Path
 
 
-def run_stage(env_name, script_path, args_list):
-    """Runs a stage script in a specific uv virtualenv."""
-    import subprocess
-    import sys
-    
-    # Mapping conda env names to uv venv paths
-    env_map = {
-        "flux_env": ".venv",
-        "meshgen": ".venv",
-        "stage34_env": ".venv",
-        "PartSAM": ".venv_PartSAM",
-        "unirig": ".venv_unirig",
-        "motion": ".venv",
-        "riganything": ".venv_riganything",
-        "sampart3d": ".venv_sampart3d"
-    }
-    
-    venv_dir = env_map.get(env_name, ".venv")
-    python_exe = os.path.join(venv_dir, "bin", "python")
-
-    # Set environment variables for the subprocess
-    env = os.environ.copy()
-    env["TORCH_WEIGHTS_ONLY"] = "0"  # Fix for PyTorch 2.6+ loading old checkpoints
-
-    if not os.path.exists(python_exe):
-        print(f"Warning: {python_exe} not found, falling back to sys.executable")
-        python_exe = sys.executable
-
-    cmd = [python_exe, script_path] + args_list
-    
-    print(f"\n[Environment: {env_name} (using {venv_dir})] Executing: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, env=env)
+def _load_stage_json(output_dir: str, name: str, stage: int) -> dict:
+    """Load intermediate JSON for a given stage."""
+    path = Path(output_dir) / name / "intermediate" / f"stage{stage}_output.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Stage {stage} output not found at {path}. "
+            f"Run stages 1-{stage} first or use --resume-from {stage}."
+        )
+    return json.loads(path.read_text())
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Mesh Generation & Animation Pipeline")
-    parser.add_argument("--prompt", type=str, required=True, help="Text prompt for character generation")
-    parser.add_argument("--output_name", type=str, default="creature", help="Base name for output files")
-    parser.add_argument("--stage", type=int, nargs="+", default=[1, 2, 3, 4], help="Stages to run (1-4)")
-    parser.add_argument("--creature_type", type=str, choices=["biped", "quadruped"], help="Override creature type")
-    parser.add_argument("--target_faces", type=int, default=10000, help="Target face count for refinement")
-    parser.add_argument("--decimate", action="store_true", help="Enable mesh decimation in Stage 3 (reduces to --target_faces)")
-    args = parser.parse_args()
+def run_pipeline(
+    prompt: str,
+    output_name: str,
+    output_dir: str = "output",
+    stages: list[int] | None = None,
+    resume_from: int | None = None,
+    quality: str = "standard",
+    target_faces: int | None = None,
+) -> dict:
+    """
+    Run the full mesh-gen pipeline.
 
-    # ── Paths ───────────────────────────────────────────────────────────────
-    project_dir  = os.path.join("output", args.output_name)
-    inter_dir    = os.path.join(project_dir, "intermediate")
-    os.makedirs(project_dir, exist_ok=True)
-    os.makedirs(inter_dir, exist_ok=True)
+    Returns a dict with all stage outputs.
+    """
+    if stages is None:
+        stages = [1, 2, 3, 4, 5]
 
-    base_name      = args.output_name
-    ref_image_path = os.path.join(inter_dir, f"{base_name}_reference.png")
-    raw_mesh_obj   = os.path.join(inter_dir, f"{base_name}_raw.obj")
-    raw_mesh_glb   = os.path.join(inter_dir, f"{base_name}_raw.glb")
-    refined_path   = os.path.join(inter_dir, f"{base_name}_refined.glb")
-    stage3_body    = os.path.join(inter_dir, "body.glb")
-    stage3_props   = os.path.join(inter_dir, "props.glb")
-    joints_json    = os.path.join(inter_dir, "joints.json")
-    rigged_fbx     = os.path.join(inter_dir, "rigged_body.fbx")
-    motion_dir     = os.path.join(inter_dir, "motions")
-    final_fbx      = os.path.join(project_dir, f"{base_name}_final.fbx")
-    final_glb      = os.path.join(project_dir, f"{base_name}_final.glb")
+    # Adjust stages for resume
+    if resume_from is not None:
+        stages = [s for s in stages if s >= resume_from]
 
-    stages = set(args.stage)
+    results: dict = {}
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 1: Vision Prior (FLUX) -> flux_env
-    # ═══════════════════════════════════════════════════════════════════════
+    # ── Stage 1: Prompt Parsing ─────────────────────────────────────────────
     if 1 in stages:
         print("\n" + "=" * 60)
-        print("  Stage 1: Vision Prior")
+        print("STAGE 1: Prompt Parsing (text → JSON)")
         print("=" * 60)
-        run_stage("flux_env", "src/stage1_vision_prior.py", ["--prompt", args.prompt, "--output", ref_image_path])
-    else:
-        print("\n--- Skipping Stage 1 ---")
+        t0 = time.time()
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 2: 3D Generation (TRELLIS.2) -> meshgen
-    # ═══════════════════════════════════════════════════════════════════════
+        from src.stage1_prompt_parsing import parse_prompt
+        s1 = parse_prompt(prompt=prompt)
+        
+        # Save JSON
+        _save_json(output_dir, output_name, 1, s1.model_dump())
+        results["stage1"] = s1.model_dump()
+        print(f"[main] Stage 1 done in {time.time() - t0:.1f}s")
+    elif resume_from and resume_from > 1:
+        data = _load_stage_json(output_dir, output_name, 1)
+        from src.stage1_prompt_parsing import ParsedPrompt
+        results["stage1"] = ParsedPrompt(**data).model_dump()
+
+    # ── Stage 2: Text-to-3D ─────────────────────────────────────────────────
     if 2 in stages:
         print("\n" + "=" * 60)
-        print("  Stage 2: 3D Generation")
+        print("STAGE 2: Text-to-3D (parsed prompt → 3D mesh)")
         print("=" * 60)
-        run_stage("meshgen", "src/stage2_trellis_wrapper.py", ["--image", ref_image_path, "--output", raw_mesh_obj])
-    else:
-        print("\n--- Skipping Stage 2 ---")
+        t0 = time.time()
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 3: Mesh Optimization -> stage34_env
-    # ═══════════════════════════════════════════════════════════════════════
+        from src.stage1_prompt_parsing import ParsedPrompt
+        from src.stage2_text_to_3d import generate_3d_mesh
+        s1_out = ParsedPrompt(**results["stage1"])
+        s2 = generate_3d_mesh(
+            parsed_prompt=s1_out,
+            output_dir=output_dir,
+            output_name=output_name,
+        )
+        _save_json(output_dir, output_name, 2, s2.model_dump())
+        results["stage2"] = s2.model_dump()
+        print(f"[main] Stage 2 done in {time.time() - t0:.1f}s")
+    elif resume_from and resume_from > 2:
+        data = _load_stage_json(output_dir, output_name, 2)
+        from src.stage2_text_to_3d import Stage2Output
+        results["stage2"] = Stage2Output(**data).model_dump()
+
+    # ── Stage 3: Mesh Optimization ──────────────────────────────────────────
     if 3 in stages:
         print("\n" + "=" * 60)
-        print("  Stage 3: Mesh Optimization")
+        print("STAGE 3: Mesh Optimization & Decimation")
         print("=" * 60)
-        stage3_args = [
-            "--input", raw_mesh_obj, "--output", refined_path,
-            "--target_faces", str(args.target_faces)
-        ]
-        if args.decimate:
-            stage3_args.append("--decimate")
-        run_stage("stage34_env", "src/stage3_mesh_optimization.py", stage3_args)
-    else:
-        print("\n--- Skipping Stage 3 ---")
+        t0 = time.time()
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 4: Character Rigging & Animation
-    # ═══════════════════════════════════════════════════════════════════════
+        from src.stage2_text_to_3d import Stage2Output
+        from src.stage3_mesh_optimization import run_stage3
+        s2_out = Stage2Output(**results["stage2"])
+        s3 = run_stage3(
+            stage2_output=s2_out,
+            output_dir=output_dir,
+            quality=quality,
+            target_faces=target_faces,
+        )
+        _save_json(output_dir, output_name, 3, s3.model_dump())
+        results["stage3"] = s3.model_dump()
+        print(f"[main] Stage 3 done in {time.time() - t0:.1f}s → {s3.face_count} faces")
+    elif resume_from and resume_from > 3:
+        data = _load_stage_json(output_dir, output_name, 3)
+        from src.stage3_mesh_optimization import Stage3Output
+        results["stage3"] = Stage3Output(**data).model_dump()
+
+    # ── Stage 4: Auto-Rigging ───────────────────────────────────────────────
     if 4 in stages:
         print("\n" + "=" * 60)
-        print("  Stage 4: Rigging, Animation & Final Assembly")
+        print("STAGE 4: Auto-Rigging (UniRig + P3-SAM)")
         print("=" * 60)
+        t0 = time.time()
 
-        # ── Step 4a: Skip Segmentation (Alternative 1: Rig-Aware Rigid Weighting) ────────
-        # We no longer use PartSAM/SAMPart3D for segmentation. 
-        # Instead, we rig the combined mesh and handle props via bone weighting in Stage 4d.
-        print("\n--- Step 4a: Skipping Segmentation (using Rig-Aware Weighting instead) ---")
-        body_obj = refined_path
-        props_obj = None
+        from src.stage3_mesh_optimization import Stage3Output
+        from src.stage4_auto_rig import run_stage4
+        s3_out = Stage3Output(**results["stage3"])
+        s4 = run_stage4(
+            stage3_output=s3_out,
+            output_dir=output_dir,
+        )
+        _save_json(output_dir, output_name, 4, s4.model_dump())
+        results["stage4"] = s4.model_dump()
+        print(
+            f"[main] Stage 4 done in {time.time() - t0:.1f}s "
+            f"({s4.joint_count} joints, method={s4.rigging_method})"
+        )
+    elif resume_from and resume_from > 4:
+        data = _load_stage_json(output_dir, output_name, 4)
+        from src.stage4_auto_rig import Stage4Output
+        results["stage4"] = Stage4Output(**data).model_dump()
 
-        # ── Step 4b: Rigging -> unirig ───────────────────────────────────────
-        print("\n--- Step 4b: Topology-Agnostic Rigging ---")
-        try:
-            run_stage("unirig", "src/stage4_topology_agnostic_rig.py", [
-                "--input", body_obj, "--output_dir", inter_dir
-            ])
-        except subprocess.CalledProcessError as e:
-            print(f"  Warning: Rigging step exited with error ({e.returncode}). Continuing if joints.json exists.")
+    # ── Stage 5: Animation ──────────────────────────────────────────────────
+    if 5 in stages:
+        print("\n" + "=" * 60)
+        print("STAGE 5: Animation (MotionGPT3)")
+        print("=" * 60)
+        t0 = time.time()
 
-        if not os.path.exists(joints_json):
-            print(f"  Rigging did not produce {joints_json}. Skipping motion synthesis and assembly.")
-        else:
-            # ── Step 4c: Motion Synthesis (procedural, no external dependency) ──
-            print("\n--- Step 4c: Motion Synthesis ---")
-            try:
-                run_stage("motion", "src/stage4_motion_synthesis.py", [
-                    "--rig_file", joints_json, "--output_dir", motion_dir, "--prompt", args.prompt, "--props", props_obj if props_obj else ""
-                ])
-            except subprocess.CalledProcessError as e:
-                print(f"  Warning: Motion synthesis failed ({e.returncode}). Continuing to assembly.")
+        from src.stage4_auto_rig import Stage4Output
+        from src.stage5_animation import run_stage5
+        s4_out = Stage4Output(**results["stage4"])
+        s5 = run_stage5(
+            stage4_output=s4_out,
+            original_prompt=prompt,
+            output_dir=output_dir,
+        )
+        _save_json(output_dir, output_name, 5, s5.model_dump())
+        results["stage5"] = s5.model_dump()
+        print(f"[main] Stage 5 done in {time.time() - t0:.1f}s")
+    elif resume_from and resume_from > 5:
+        data = _load_stage_json(output_dir, output_name, 5)
+        from src.stage5_animation import Stage5Output
+        results["stage5"] = Stage5Output(**data).model_dump()
 
-            # ── Step 4d: Assembly -> riganything ─────────────────────────────
-            if not os.path.exists(rigged_fbx):
-                print(f"  Warning: {rigged_fbx} not found. Skipping assembly.")
-            else:
-                print("\n--- Step 4d: STaR Motion Retargeting & Assembly ---")
-                # When decimating, use the decimated refined mesh as the body/colour source
-                # so the final display mesh has the reduced geometry, not the full-res raw.
-                # Without decimation, prefer the raw TRELLIS GLB for richer colour data.
-                if args.decimate:
-                    color_src = refined_path
-                    print(f"  Using decimated refined mesh for color: {color_src}")
-                else:
-                    color_src = raw_mesh_glb if os.path.exists(raw_mesh_glb) else refined_path
-                    print(f"  Using raw TRELLIS GLB for color: {color_src}")
-                run_stage("riganything", "src/stage4_assemble_final.py", [
-                    "--rigged_body", rigged_fbx,
-                    "--motion_dir", motion_dir,
-                    "--output_fbx", final_fbx,
-                    "--output_glb", final_glb,
-                    "--joints_json", joints_json,
-                    "--color_source", color_src,
-                    "--props", props_obj if props_obj and os.path.exists(props_obj) else ""
-                ])
-    else:
-        print("\n--- Skipping Stage 4 ---")
+    return results
 
+
+def _save_json(output_dir: str, name: str, stage: int, data: dict) -> None:
+    path = Path(output_dir) / name / "intermediate" / f"stage{stage}_output.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
+
+def _print_summary(results: dict, output_dir: str, name: str) -> None:
     print("\n" + "=" * 60)
-    print("  Pipeline Complete!")
+    print("PIPELINE COMPLETE")
     print("=" * 60)
-    print(f"  Final FBX : {final_fbx}")
-    print(f"  Final GLB : {final_glb}")
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # Summary
-    # ═══════════════════════════════════════════════════════════════════════
-    print("\n" + "=" * 60)
-    print("  Pipeline Complete!")
-    print("=" * 60)
-    print(f"  Project directory : {project_dir}")
-    print(f"  Intermediate files: {inter_dir}")
-    if 4 in stages:
-        if os.path.exists(final_fbx):
-            print(f"  Final FBX : {final_fbx}")
-        if os.path.exists(final_glb):
-            print(f"  Final GLB : {final_glb}")
+    if "stage1" in results:
+        print(f"  Parsed prompt   : {results['stage1']}")
+    if "stage2" in results:
+        print(f"  Concept image   : {results['stage2'].get('concept_image_path', '')}")
+        print(f"  Raw OBJ         : {results['stage2'].get('obj_path', '')}")
+        print(f"  Raw GLB         : {results['stage2'].get('glb_path', '')}")
+    if "stage3" in results:
+        print(f"  Refined GLB     : {results['stage3']['refined_glb_path']}")
+        print(f"  Refined OBJ     : {results['stage3']['refined_obj_path']}")
+        print(f"  Face count      : {results['stage3']['face_count']}")
+    if "stage4" in results:
+        print(f"  Rigged FBX      : {results['stage4']['fbx_path']}")
+        print(f"  Final GLB       : {results['stage4']['glb_path']}")
+        print(f"  Joints JSON     : {results['stage4']['joints_path']}")
+        print(f"  Rigging method  : {results['stage4']['rigging_method']}")
+    if "stage5" in results:
+        print(f"  Animated GLB    : {results['stage5']['animated_glb_path']}")
+        print(f"  Animations JSON : {results['stage5']['animations_json_path']}")
     print()
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Mesh-Gen-Pipeline: text prompt → rigged 3D game character",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("--prompt", "-p", type=str, required=True,
+                        help="Natural language character description")
+    parser.add_argument("--output-name", "-n", type=str, default="character",
+                        help="Short name for output files (default: character)")
+    parser.add_argument("--output-dir", "-o", type=str, default="output",
+                        help="Output root directory (default: output)")
+    parser.add_argument("--stages", type=int, nargs="+", default=[1, 2, 3, 4, 5],
+                        choices=[1, 2, 3, 4, 5],
+                        help="Stages to run (default: 1 2 3 4 5)")
+    parser.add_argument("--resume-from", type=int, default=None, choices=[2, 3, 4, 5],
+                        help="Resume from this stage (loads prior stage outputs from disk)")
+    parser.add_argument("--quality", "-q", type=str, default="standard",
+                        choices=["mobile", "standard", "high"],
+                        help="Mesh quality preset for Stage 3 (default: standard)")
+    parser.add_argument("--faces", type=int, default=None,
+                        help="Override target face count for Stage 3")
+    args = parser.parse_args()
+
+    print(f"\nMesh-Gen-Pipeline")
+    print(f"  Prompt : {args.prompt[:80]}{'...' if len(args.prompt) > 80 else ''}")
+    print(f"  Name   : {args.output_name}")
+    print(f"  Stages : {args.stages}")
+
+    results = run_pipeline(
+        prompt=args.prompt,
+        output_name=args.output_name,
+        output_dir=args.output_dir,
+        stages=args.stages,
+        resume_from=args.resume_from,
+        quality=args.quality,
+        target_faces=args.faces,
+    )
+
+    _print_summary(results, args.output_dir, args.output_name)
 
 
 if __name__ == "__main__":
