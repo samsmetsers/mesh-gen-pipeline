@@ -1,7 +1,7 @@
 [project]
 name = "mesh-gen-pipeline"
 version = "0.1.0"
-description = "Prompt-to-3D-rigged-game-character pipeline (Shap-E → PyMeshLab → Puppeteer → Blender)"
+description = "Prompt-to-3D-rigged-game-character pipeline (FLUX → TRELLIS → UniRig → MotionGPT3)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
