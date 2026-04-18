@@ -422,21 +422,16 @@ def generate_3d_mesh(
     parsed_prompt: ParsedPrompt,
     output_dir: str = "output",
     output_name: str = "character",
-    mock: bool = False,
 ) -> Stage2Output:
     """
     Takes a ParsedPrompt and generates a UV-textured 3D mesh.
 
-    Real mode:
-      1. FLUX.2-klein-4B → concept PNG (white background, 1024×1024)
-      2. BiRefNet (TRELLIS.2 rembg) → RGBA with transparent background
-      3. TRELLIS.2-4B → MeshWithVoxel (geometry + volumetric PBR latent)
-      4. mesh.simplify(16M) → within nvdiffrast limits
-      5. Export raw OBJ (untextured) for Stage 3
-      6. o_voxel.postprocess.to_glb() → PBR UV-textured GLB
-
-    Mock mode:
-      Writes a minimal cube OBJ + dummy GLB without touching GPU.
+    1. FLUX.2-klein-4B → concept PNG (white background, 1024×1024)
+    2. BiRefNet (TRELLIS.2 rembg) → RGBA with transparent background
+    3. TRELLIS.2-4B → MeshWithVoxel (geometry + volumetric PBR latent)
+    4. mesh.simplify(16M) → within nvdiffrast limits
+    5. Export raw OBJ (untextured) for Stage 3
+    6. o_voxel.postprocess.to_glb() → PBR UV-textured GLB
     """
     out_path = Path(output_dir) / output_name / "intermediate"
     out_path.mkdir(parents=True, exist_ok=True)
@@ -444,21 +439,6 @@ def generate_3d_mesh(
     concept_png  = str(out_path / f"{output_name}_concept.png")
     obj_filename = str(out_path / f"{output_name}_raw.obj")
     glb_filename = str(out_path / f"{output_name}_raw.glb")
-
-    # ── Mock mode ─────────────────────────────────────────────────────────────
-    if mock:
-        print("[Stage 2] Mock mode — writing placeholder files.")
-        with open(obj_filename, "w") as f:
-            f.write(MOCK_OBJ_CONTENT)
-        Path(glb_filename).write_bytes(b"Dummy GLB")
-        # Write a tiny placeholder PNG
-        Image.new("RGB", (64, 64), color=(180, 120, 80)).save(concept_png)
-        return Stage2Output(
-            obj_path=obj_filename,
-            glb_path=glb_filename,
-            concept_image_path=concept_png,
-            output_name=output_name,
-        )
 
     # ── Real generation ───────────────────────────────────────────────────────
     print("[Stage 2] Starting real generation pipeline…")

@@ -5,21 +5,18 @@
 # Installs all dependencies for the complete mesh-gen-pipeline.
 #
 # Usage:
-#   ./scripts/setup_all.sh [--skip-compile] [--mock-only]
+#   ./scripts/setup_all.sh [--mock-only]
 #
 # Options:
-#   --skip-compile  Skip flash-attn / pytorch3d compilation (stages 1-3 only).
-#   --mock-only     Only install main venv deps (no Puppeteer setup).
+#   --mock-only     Only install main venv deps (no new models setup).
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-SKIP_COMPILE=0
 MOCK_ONLY=0
 for arg in "$@"; do
-    [[ "$arg" == "--skip-compile" ]] && SKIP_COMPILE=1
     [[ "$arg" == "--mock-only" ]]    && MOCK_ONLY=1
 done
 
@@ -38,17 +35,16 @@ if [[ $MOCK_ONLY -eq 0 ]]; then
     echo "[setup_all] Installing PyTorch, Diffusers, Trimesh, PyMeshLab for Stages 2 and 3 …"
     uv pip install --python .venv/bin/python -e ".[all]"
 
-    # Puppeteer for Stage 4
-    COMPILE_FLAG=""
-    [[ $SKIP_COMPILE -eq 1 ]] && COMPILE_FLAG="--skip-compile"
-    echo "[setup_all] Setting up Puppeteer …"
-    bash "$SCRIPT_DIR/setup_puppeteer.sh" $COMPILE_FLAG
+    echo "[setup_all] Setting up UniRig …"
+    bash "$SCRIPT_DIR/setup_unirig.sh"
 
-    # Ensure Blender's python has trimesh and numpy for Puppeteer's export.py
-    echo "[setup_all] Installing trimesh and numpy for Blender's python …"
-    uv pip install trimesh numpy==1.26.4 --python /usr/bin/python3.12 --target ~/.local/lib/python3.12/site-packages
+    echo "[setup_all] Setting up P3-SAM …"
+    bash "$SCRIPT_DIR/setup_p3sam.sh"
+
+    echo "[setup_all] Setting up MotionGPT3 …"
+    bash "$SCRIPT_DIR/setup_motiongpt.sh"
 else
-    echo "[setup_all] Mock-only mode: skipping ML dependencies and Puppeteer setup."
+    echo "[setup_all] Mock-only mode: skipping ML dependencies and model setup."
 fi
 
 echo ""

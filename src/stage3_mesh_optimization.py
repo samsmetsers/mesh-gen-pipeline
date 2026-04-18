@@ -342,7 +342,6 @@ def run_stage3(
     output_dir: str = "output",
     quality: str = "standard",
     target_faces: int | None = None,
-    mock: bool = False,
 ) -> Stage3Output:
     """
     Run Stage 3: repair and decimate the raw mesh.
@@ -352,7 +351,6 @@ def run_stage3(
         output_dir:    Root output directory.
         quality:       Preset name ('mobile', 'standard', 'high').
         target_faces:  Override face count (overrides quality preset).
-        mock:          If True, pass through without actual processing.
 
     Returns:
         Stage3Output with paths to the refined GLB and OBJ.
@@ -364,17 +362,6 @@ def run_stage3(
     refined_glb = str(out_path / f"{name}_refined.glb")
     refined_obj = str(out_path / f"{name}_refined.obj")
     faces = target_faces or QUALITY_PRESETS.get(quality, QUALITY_PRESETS["standard"])
-
-    if mock:
-        print(f"[Stage 3] Mock mode: writing placeholder GLB to {refined_glb}")
-        _write_minimal_glb(refined_glb)
-        Path(refined_obj).write_text("Mock OBJ")
-        return Stage3Output(
-            refined_glb_path=os.path.abspath(refined_glb),
-            refined_obj_path=os.path.abspath(refined_obj),
-            face_count=12,  # cube has 12 faces
-            output_name=name,
-        )
 
     # Prefer the textured GLB over the raw OBJ.
     # The raw.glb (from o_voxel PBR bake) has proper UV coordinates and an
@@ -423,7 +410,6 @@ if __name__ == "__main__":
                         help="Decimation quality preset (default: standard)")
     parser.add_argument("--faces", type=int, default=None,
                         help="Override target face count (overrides --quality)")
-    parser.add_argument("--mock", action="store_true")
     args = parser.parse_args()
 
     if args.input:
@@ -437,7 +423,6 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         quality=args.quality,
         target_faces=args.faces,
-        mock=args.mock,
     )
 
     json_path = (

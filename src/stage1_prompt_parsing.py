@@ -36,42 +36,8 @@ def wrap_prompt(prompt: str) -> str:
     return _STYLE_PREFIX + prompt.strip(" .") + _STYLE_SUFFIX
 
 
-def parse_prompt(prompt: str, mock: bool = False) -> ParsedPrompt:
+def parse_prompt(prompt: str) -> ParsedPrompt:
     """Parses a natural language prompt into a structured JSON format."""
-    if mock:
-        # Simple heuristic fallback for testing without a running LLM
-        anim = "idle"
-        if "combat" in prompt.lower() or "attack" in prompt.lower():
-            anim = "attack"
-        elif "walk" in prompt.lower() or "run" in prompt.lower() or "march" in prompt.lower():
-            anim = "walk"
-            
-        rigid = None
-        if "holding a " in prompt.lower():
-            start = prompt.lower().find("holding a ") + 10
-            # Extract until comma or end of string
-            end = prompt.find(",", start)
-            if end == -1: end = len(prompt)
-            rigid = prompt[start:end].strip()
-
-        # Extract some common style tags; always include semi-voxel
-        tags = ["semi-voxel"]
-        for tag in ["game-ready", "low-poly", "stylized", "mobile-optimized"]:
-            if tag in prompt.lower():
-                tags.append(tag)
-
-        # Basic stripping for character desc (mock only)
-        desc = prompt
-        for tag in tags:
-            desc = desc.replace(tag, "").replace(", ,", ",")
-            
-        return ParsedPrompt(
-            character_description=desc.strip(" ,.-"),
-            rigid_object=rigid,
-            animation_type=anim,
-            style_tags=tags
-        )
-        
     from huggingface_hub import InferenceClient
     
     client = InferenceClient(model="meta-llama/Llama-3.3-70B-Instruct")
@@ -113,13 +79,12 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Stage 1: Prompt Parsing")
     parser.add_argument("prompt", type=str, help="The natural language prompt")
-    parser.add_argument("--mock", action="store_true", help="Use mock parser instead of LLM")
     parser.add_argument("--output", type=str, default="output/parsed_prompt.json", help="Path to save the JSON output")
     args = parser.parse_args()
     
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     
-    result = parse_prompt(args.prompt, mock=args.mock)
+    result = parse_prompt(args.prompt)
     
     with open(args.output, "w") as f:
         f.write(result.model_dump_json(indent=2))

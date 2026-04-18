@@ -1,17 +1,13 @@
 """
-Stage 4: Auto-Rigging
-=====================
-Primary rigging path: Puppeteer (ML-based, Seed3D/Puppeteer).
-Fallback:            Blender heuristic auto-rigger.
+Stage 4: Auto-Rigging (Next-Gen Modular Stack)
+==============================================
+Primary rigging path: UniRig (Autoregressive Transformer) + P3-SAM + Rigodotify
 
-Puppeteer pipeline (three sub-stages):
-  1. Skeleton generation — SkeletonGPT predicts humanoid joints from a point cloud.
-  2. Skinning weights    — SkinningNet assigns vertex weights to predicted joints.
-  3. FBX export          — Blender export.py bakes mesh + rig into FBX.
-
-Blender heuristic fallback:
-  - Cross-section analysis → landmark detection → procedural 20-bone armature.
-  - Used when Puppeteer venv is not installed or inference fails.
+Pipeline (four sub-stages):
+  1. Part Segmentation (P3-SAM) - Decomposes mesh to identify props/weapons.
+  2. Autoregressive Rigging (UniRig) - Generates topologically valid skeleton and skinning weights. Includes "Grip" bones.
+  3. Standardization (Blender headless) - Renames bones, applies Rigodotify for Unity/Godot standards, adds twist bones.
+  4. Export - Final FBX and GLB.
 
 Output:
   - <name>_rigged.fbx
@@ -27,11 +23,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-
 from pydantic import BaseModel, Field
 
 from src.stage3_mesh_optimization import Stage3Output
-
 
 class Stage4Output(BaseModel):
     fbx_path: str = Field(description="Path to the rigged FBX file.")
@@ -39,223 +33,85 @@ class Stage4Output(BaseModel):
     joints_path: str = Field(description="Path to joints.json skeleton description.")
     joint_count: int = Field(description="Number of joints in the rig.")
     output_name: str = Field(description="Short identifier used for file naming.")
-    rigging_method: str = Field(description="Method used: 'puppeteer' or 'blender_auto'.")
+    rigging_method: str = Field(description="Method used: 'unirig'.")
 
+_PROJECT_ROOT = Path(__file__).parent.parent
+_UNIRIG_VENV = _PROJECT_ROOT / ".venv_unirig"
+_P3SAM_VENV = _PROJECT_ROOT / ".venv_p3sam"
 
-_PROJECT_ROOT   = Path(__file__).parent.parent
-_PUPPETEER_DIR  = _PROJECT_ROOT / "external" / "Puppeteer"
-_PUPPETEER_VENV = _PROJECT_ROOT / ".venv_puppeteer"
-
-
-def _run_puppeteer(
-    input_mesh: str,
-    output_fbx: str,
-    output_glb: str,
-    joints_path: str,
-) -> int:
-    """
-    Run Puppeteer (ML-based rigging) via its dedicated Python 3.10 venv.
-
-    The runner calls puppeteer_blend_export.py which exports BOTH the FBX
-    (rigged character for DCC tools) and a GLB (for Stage 5) directly from
-    the same Blender session that imported the refined OBJ.  Exporting GLB
-    directly — rather than converting FBX→GLB afterwards — preserves:
-      • PBR materials (FBX uses lossy Phong; the OBJ/MTL → GLTF path is lossless)
-      • Correct winding order (OBJ import is a pure rotation; no scale flip)
-      • Correct bone axes (no FBX coordinate re-transform on import)
-
-    Returns the number of joints written to joints_path.
-    """
-    python_bin = str(_PUPPETEER_VENV / "bin" / "python")
-    if not os.path.exists(python_bin):
-        raise RuntimeError(
-            "Puppeteer venv not found at .venv_puppeteer/. "
-            "Run scripts/setup_puppeteer.sh first."
-        )
-    if not _PUPPETEER_DIR.exists():
-        raise RuntimeError(
-            f"Puppeteer repo not found at {_PUPPETEER_DIR}. "
-            "Run scripts/setup_puppeteer.sh first."
-        )
-
-    script_path = _PROJECT_ROOT / "scripts" / "puppeteer_runner.py"
-
+def _run_p3sam(input_mesh: str, output_masks: str) -> None:
+    print(f"[Stage 4] Running P3-SAM segmentation on {input_mesh}")
+    python_bin = str(_P3SAM_VENV / "bin" / "python")
+    script_path = _PROJECT_ROOT / "scripts" / "p3sam_inference.py"
+    
     cmd = [
-        python_bin,
-        str(script_path),
-        "--input",         str(Path(input_mesh).resolve()),
-        "--output",        str(Path(output_fbx).resolve()),
-        "--output-glb",    str(Path(output_glb).resolve()),
-        "--joints",        str(Path(joints_path).resolve()),
-        "--puppeteer-dir", str(_PUPPETEER_DIR.resolve()),
-    ]
-
-    print(f"[Stage 4] Running Puppeteer: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-
-    if result.returncode != 0:
-        print(result.stdout[-3000:])
-        print(result.stderr[-3000:], file=sys.stderr)
-        raise RuntimeError(f"Puppeteer failed with code {result.returncode}")
-
-    print(result.stdout[-2000:])
-
-    # GLB is produced directly by puppeteer_blend_export.py (no FBX→GLB round-trip).
-    # _convert_fbx_to_glb is kept as a fallback for the heuristic Blender path only.
-    if not Path(output_glb).exists():
-        print("[Stage 4] WARNING: direct GLB export missing, falling back to FBX→GLB conversion.")
-        _convert_fbx_to_glb(output_fbx, output_glb)
-
-    if Path(joints_path).exists():
-        return len(json.loads(Path(joints_path).read_text()))
-    return 0
-
-
-def _convert_fbx_to_glb(fbx_path: str, glb_path: str) -> None:
-    """Helper to convert the rigged FBX back to GLB for Stage 5.
-
-    Uses scripts/fbx_to_glb.py which fixes three issues that the old inline
-    one-liner had:
-      1. Inverted normals (see-through mesh due to back-face culling).
-      2. Flat / faceted shading (shade-smooth not preserved across FBX).
-      3. Glistening material (FBX Phong → Principled BSDF maps with low roughness).
-    """
-    script_path = _PROJECT_ROOT / "scripts" / "fbx_to_glb.py"
-    cmd = [
-        "blender", "--background",
-        "--python", str(script_path),
-        "--",
-        "--input",  str(Path(fbx_path).resolve()),
-        "--output", str(Path(glb_path).resolve()),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"fbx_to_glb failed (code {result.returncode}):\n"
-            f"{result.stderr[-2000:]}"
-        )
-
-
-def _run_blender_rigger(
-    input_mesh: str,
-    output_fbx: str,
-    output_glb: str,
-    joints_path: str,
-) -> int:
-    """
-    Invoke Blender in background mode to rig the mesh.
-
-    Uses the input OBJ or GLB. Blender's importers handle the Y-to-Z up
-    conversion for both formats, ensuring the character is upright.
-    Preferring OBJ from Stage 3 avoids "holes" introduced by trimesh's
-    GLB export.
-
-    Returns the number of joints.
-    """
-    script_path = Path(__file__).parent.parent / "scripts" / "blender_auto_rig.py"
-
-    cmd = [
-        "blender",
-        "--background",
-        "--python", str(script_path),
-        "--",
+        python_bin, str(script_path),
         "--input", str(Path(input_mesh).resolve()),
+        "--output", str(Path(output_masks).resolve())
+    ]
+    subprocess.run(cmd, check=True)
+
+def _run_unirig(input_mesh: str, masks_path: str, output_glb: str, joints_path: str) -> int:
+    print(f"[Stage 4] Running UniRig autoregressive rigging...")
+    python_bin = str(_UNIRIG_VENV / "bin" / "python")
+    script_path = _PROJECT_ROOT / "scripts" / "unirig_inference.py"
+    
+    cmd = [
+        python_bin, str(script_path),
+        "--input", str(Path(input_mesh).resolve()),
+        "--output-glb", str(Path(output_glb).resolve()),
+        "--joints-path", str(Path(joints_path).resolve())
+    ]
+    subprocess.run(cmd, check=True)
+    
+    with open(joints_path, "r") as f:
+        joints = json.load(f)
+    return len(joints)
+
+def _run_headless_standardization(input_glb: str, output_fbx: str, output_glb: str,
+                                   masks_path: str | None = None,
+                                   textured_glb: str | None = None) -> None:
+    print(f"[Stage 4] Running Headless Blender Standardization (Rigodotify, Twist Bones, Grip Bones)")
+    script_path = _PROJECT_ROOT / "scripts" / "blender_standardize.py"
+    cmd = [
+        "blender", "--background", "--python", str(script_path), "--",
+        "--input", str(Path(input_glb).resolve()),
         "--output-fbx", str(Path(output_fbx).resolve()),
         "--output-glb", str(Path(output_glb).resolve()),
-        "--joints", str(Path(joints_path).resolve()),
     ]
+    if masks_path:
+        cmd.extend(["--masks", str(Path(masks_path).resolve())])
+    if textured_glb:
+        cmd.extend(["--textured-glb", str(Path(textured_glb).resolve())])
 
-    # Hard timeout to prevent an unresponsive Blender process from hanging
-    # indefinitely and consuming all WSL RAM (bone-heat weighting on dense
-    # meshes can stall for hours).  600 s is generous for a 12 k-face mesh;
-    # reduce Stage 3 quality preset if this fires on your hardware.
-    _BLENDER_TIMEOUT = 600
-    print(f"[Stage 4] Running Blender Auto-Rigger (timeout={_BLENDER_TIMEOUT}s): {' '.join(cmd)}")
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_BLENDER_TIMEOUT
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"Blender auto-rigger timed out after {_BLENDER_TIMEOUT} s. "
-            "The input mesh may be too dense for ARMATURE_AUTO. "
-            "Re-run Stage 3 with --quality mobile (5 k faces) and retry."
-        )
-
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(result.stdout[-3000:])
-        print(result.stderr[-3000:])
-        raise RuntimeError(f"Blender auto-rigger failed with code {result.returncode}")
+        raise RuntimeError(f"Blender standardization failed: {result.stderr}")
 
-    if Path(joints_path).exists():
-        return len(json.loads(Path(joints_path).read_text()))
-    return 0
-
-
-def run_stage4(
-    stage3_output: Stage3Output,
-    output_dir: str = "output",
-    mock: bool = False,
-) -> Stage4Output:
-    """
-    Run Stage 4: auto-rig the optimised mesh using Blender.
-    """
+def run_stage4(stage3_output: Stage3Output, output_dir: str = "output") -> Stage4Output:
     name = stage3_output.output_name
     out_root = Path(output_dir) / name
     intermediate = out_root / "intermediate"
     intermediate.mkdir(parents=True, exist_ok=True)
 
-    fbx_path     = str(out_root / f"{name}_rigged.fbx")
-    glb_path     = str(out_root / f"{name}_final.glb")
-    joints_path  = str(intermediate / "joints.json")
+    fbx_path = str(out_root / f"{name}_rigged.fbx")
+    glb_path = str(out_root / f"{name}_final.glb")
+    masks_path = str(intermediate / "masks.json")
+    unirig_glb = str(intermediate / f"{name}_unirig.glb")
+    joints_path = str(intermediate / "joints.json")
 
-    if mock:
-        print("[Stage 4] Mock mode: skipping actual Blender rigging.")
-        # Just create dummy files
-        Path(fbx_path).write_text("Mock FBX")
-        Path(glb_path).write_text("Mock GLB")
-        dummy_joints = [{"name": "root", "parent": None, "position": [0,0,0]}]
-        Path(joints_path).write_text(json.dumps(dummy_joints))
-        return Stage4Output(
-            fbx_path=os.path.abspath(fbx_path),
-            glb_path=os.path.abspath(glb_path),
-            joints_path=os.path.abspath(joints_path),
-            joint_count=1,
-            output_name=name,
-            rigging_method="mock"
-        )
-
-    # Prefer the refined OBJ over the GLB for rigging.
-    # Why: Stage 3's trimesh-exported GLB can sometimes have holes or flipped
-    # normals (especially on complex characters with props). The refined OBJ
-    # (saved directly from PyMeshLab) is geometrically more reliable and is
-    # imported natively by Blender with correct axis-handling.
     input_mesh = stage3_output.refined_obj_path
     if not Path(input_mesh).exists():
         input_mesh = stage3_output.refined_glb_path
 
-    # Prefer Puppeteer (ML-based) — pose-independent, trained skeleton prediction.
-    # Fall back to the Blender heuristic only if Puppeteer is not installed or fails.
-    try:
-        print("[Stage 4] Attempting Puppeteer rigging …")
-        joint_count = _run_puppeteer(
-            input_mesh=input_mesh,
-            output_fbx=fbx_path,
-            output_glb=glb_path,
-            joints_path=joints_path,
-        )
-        rig_method = "puppeteer"
-    except Exception as e:
-        print(f"[Stage 4] Puppeteer failed ({e}); falling back to Blender heuristic …")
-        joint_count = _run_blender_rigger(
-            input_mesh=input_mesh,
-            output_fbx=fbx_path,
-            output_glb=glb_path,
-            joints_path=joints_path,
-        )
-        rig_method = "blender_auto"
+    _run_p3sam(input_mesh, masks_path)
+    joint_count = _run_unirig(input_mesh, masks_path, unirig_glb, joints_path)
+    _run_headless_standardization(
+        unirig_glb, fbx_path, glb_path, masks_path,
+        textured_glb=stage3_output.refined_glb_path,
+    )
 
-    print(f"[Stage 4] Rigging complete: {joint_count} joints generated via {rig_method}.")
+    print(f"[Stage 4] Rigging complete: {joint_count} joints generated via unirig.")
 
     return Stage4Output(
         fbx_path=os.path.abspath(fbx_path),
@@ -263,18 +119,15 @@ def run_stage4(
         joints_path=os.path.abspath(joints_path),
         joint_count=joint_count,
         output_name=name,
-        rigging_method=rig_method,
+        rigging_method="unirig",
     )
-
 
 if __name__ == "__main__":
     import argparse
-
-    parser = argparse.ArgumentParser(description="Stage 4: Auto-Rigging (Blender)")
+    parser = argparse.ArgumentParser(description="Stage 4: Auto-Rigging (Next-Gen)")
     parser.add_argument("--input", "-i", type=str, help="Path to stage3_output.json")
     parser.add_argument("--output-name", "-n", type=str, default="character")
     parser.add_argument("--output-dir", "-o", type=str, default="output")
-    parser.add_argument("--mock", action="store_true")
     args = parser.parse_args()
 
     if args.input:
@@ -283,12 +136,7 @@ if __name__ == "__main__":
     else:
         parser.error("--input is required.")
 
-    result = run_stage4(
-        s3,
-        output_dir=args.output_dir,
-        mock=args.mock,
-    )
-
+    result = run_stage4(s3, output_dir=args.output_dir)
     json_path = Path(args.output_dir) / s3.output_name / "intermediate" / "stage4_output.json"
     json_path.write_text(result.model_dump_json(indent=2))
     print(f"\n[Stage 4] Complete. Output JSON: {json_path}")

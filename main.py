@@ -7,8 +7,8 @@ Stages:
   1. Prompt Parsing   — text → parsed JSON
   2. Text-to-3D       — parsed JSON  → raw OBJ/GLB
   3. Mesh Optimization— raw GLB → repaired & decimated GLB (PyMeshLab)
-  4. Auto-Rigging     — GLB  → rigged FBX + joints.json (Puppeteer)
-  5. Animation        — Rigged GLB → animated GLB (Blender)
+  4. Auto-Rigging     — GLB  → rigged FBX + joints.json (UniRig + P3-SAM)
+  5. Animation        — Rigged GLB → animated GLB (MotionGPT3)
 
 Usage:
   # Mock mode (no GPU, tests the full pipeline):
@@ -59,7 +59,6 @@ def run_pipeline(
     resume_from: int | None = None,
     quality: str = "standard",
     target_faces: int | None = None,
-    mock: bool = False,
 ) -> dict:
     """
     Run the full mesh-gen pipeline.
@@ -83,7 +82,7 @@ def run_pipeline(
         t0 = time.time()
 
         from src.stage1_prompt_parsing import parse_prompt
-        s1 = parse_prompt(prompt=prompt, mock=mock)
+        s1 = parse_prompt(prompt=prompt)
         
         # Save JSON
         _save_json(output_dir, output_name, 1, s1.model_dump())
@@ -108,7 +107,6 @@ def run_pipeline(
             parsed_prompt=s1_out,
             output_dir=output_dir,
             output_name=output_name,
-            mock=mock,
         )
         _save_json(output_dir, output_name, 2, s2.model_dump())
         results["stage2"] = s2.model_dump()
@@ -133,7 +131,6 @@ def run_pipeline(
             output_dir=output_dir,
             quality=quality,
             target_faces=target_faces,
-            mock=mock,
         )
         _save_json(output_dir, output_name, 3, s3.model_dump())
         results["stage3"] = s3.model_dump()
@@ -146,7 +143,7 @@ def run_pipeline(
     # ── Stage 4: Auto-Rigging ───────────────────────────────────────────────
     if 4 in stages:
         print("\n" + "=" * 60)
-        print("STAGE 4: Auto-Rigging (Puppeteer)")
+        print("STAGE 4: Auto-Rigging (UniRig + P3-SAM)")
         print("=" * 60)
         t0 = time.time()
 
@@ -156,7 +153,6 @@ def run_pipeline(
         s4 = run_stage4(
             stage3_output=s3_out,
             output_dir=output_dir,
-            mock=mock,
         )
         _save_json(output_dir, output_name, 4, s4.model_dump())
         results["stage4"] = s4.model_dump()
@@ -172,7 +168,7 @@ def run_pipeline(
     # ── Stage 5: Animation ──────────────────────────────────────────────────
     if 5 in stages:
         print("\n" + "=" * 60)
-        print("STAGE 5: Animation (Blender)")
+        print("STAGE 5: Animation (MotionGPT3)")
         print("=" * 60)
         t0 = time.time()
 
@@ -183,7 +179,6 @@ def run_pipeline(
             stage4_output=s4_out,
             original_prompt=prompt,
             output_dir=output_dir,
-            mock=mock,
         )
         _save_json(output_dir, output_name, 5, s5.model_dump())
         results["stage5"] = s5.model_dump()
@@ -253,15 +248,12 @@ def main() -> None:
                         help="Mesh quality preset for Stage 3 (default: standard)")
     parser.add_argument("--faces", type=int, default=None,
                         help="Override target face count for Stage 3")
-    parser.add_argument("--mock", action="store_true",
-                        help="Run all stages in mock mode (no GPU required)")
     args = parser.parse_args()
 
     print(f"\nMesh-Gen-Pipeline")
     print(f"  Prompt : {args.prompt[:80]}{'...' if len(args.prompt) > 80 else ''}")
     print(f"  Name   : {args.output_name}")
     print(f"  Stages : {args.stages}")
-    print(f"  Mock   : {args.mock}")
 
     results = run_pipeline(
         prompt=args.prompt,
@@ -271,7 +263,6 @@ def main() -> None:
         resume_from=args.resume_from,
         quality=args.quality,
         target_faces=args.faces,
-        mock=args.mock,
     )
 
     _print_summary(results, args.output_dir, args.output_name)

@@ -314,6 +314,9 @@ def create_armature(lm):
                 chain[2][1] + dy * s,
                 chain[2][2] + dz * s)
 
+    def _mid(p1, p2):
+        return ((p1[0]+p2[0])*0.5, (p1[1]+p2[1])*0.5, (p1[2]+p2[2])*0.5)
+
     # Toes point forward (−Y in Blender = out of screen for a front-facing char)
     toe_y = cy - height * 0.08
 
@@ -321,34 +324,40 @@ def create_armature(lm):
     # Keys: h=head position, t=tail position, p=parent name, cat=envelope category
     bones_def = {
         # Spine
-        "root":     {"h": (cx, cy, z0),       "t": (cx, cy, pz),               "p": None,       "cat": "torso"},
-        "pelvis":   {"h": (cx, cy, pz),        "t": (cx, cy, sp1z),             "p": "root",     "cat": "torso"},
-        "spine_01": {"h": (cx, cy, sp1z),      "t": (cx, cy, sp2z),             "p": "pelvis",   "cat": "torso"},
-        "spine_02": {"h": (cx, cy, sp2z),      "t": (cx, cy, nkz),              "p": "spine_01", "cat": "torso"},
-        "neck":     {"h": (cx, cy, nkz),       "t": (cx, cy, hdz),              "p": "spine_02", "cat": "head"},
-        "head":     {"h": (cx, cy, hdz),       "t": (cx, cy, hdz + height*0.12),"p": "neck",     "cat": "head"},
+        "Root":     {"h": (cx, cy, z0),       "t": (cx, cy, pz),               "p": None,       "cat": "torso"},
+        "Hips":     {"h": (cx, cy, pz),        "t": (cx, cy, sp1z),             "p": "Root",     "cat": "torso"},
+        "Spine":    {"h": (cx, cy, sp1z),      "t": (cx, cy, sp2z),             "p": "Hips",     "cat": "torso"},
+        "Chest":    {"h": (cx, cy, sp2z),      "t": (cx, cy, nkz),              "p": "Spine",    "cat": "torso"},
+        "Neck":     {"h": (cx, cy, nkz),       "t": (cx, cy, hdz),              "p": "Chest",    "cat": "head"},
+        "Head":     {"h": (cx, cy, hdz),       "t": (cx, cy, hdz + height*0.12),"p": "Neck",     "cat": "head"},
 
-        # Left arm (Shoulder starts closer to spine for better deformation)
-        "shoulder_l":  {"h": (cx - sh_x*0.15, cy, sp2z),     "t": al[0],    "p": "spine_02",   "cat": "limb_upper"},
-        "upper_arm_l": {"h": al[0],                           "t": al[1],    "p": "shoulder_l", "cat": "limb_upper"},
-        "lower_arm_l": {"h": al[1],                           "t": al[2],    "p": "upper_arm_l","cat": "limb_lower"},
-        "hand_l":      {"h": al[2],                           "t": _hand_tip(al), "p": "lower_arm_l","cat": "extremity"},
+        # Left arm
+        "LeftShoulder":  {"h": (cx - sh_x*0.15, cy, sp2z),     "t": al[0],    "p": "Chest",   "cat": "limb_upper"},
+        "LeftUpperArm":  {"h": al[0],                           "t": al[1],    "p": "LeftShoulder", "cat": "limb_upper"},
+        "LeftLowerArm":  {"h": al[1],                           "t": _mid(al[1], al[2]), "p": "LeftUpperArm","cat": "limb_lower"},
+        "LeftLowerArmTwist": {"h": _mid(al[1], al[2]),          "t": al[2],    "p": "LeftLowerArm", "cat": "limb_lower"},
+        "LeftHand":      {"h": al[2],                           "t": _hand_tip(al), "p": "LeftLowerArmTwist","cat": "extremity"},
+        "LeftGrip":      {"h": al[2],                           "t": (al[2][0], al[2][1] - height*0.05, al[2][2]), "p": "LeftHand", "cat": "extremity"},
 
         # Right arm
-        "shoulder_r":  {"h": (cx + sh_x*0.15, cy, sp2z),     "t": ar[0],    "p": "spine_02",   "cat": "limb_upper"},
-        "upper_arm_r": {"h": ar[0],                           "t": ar[1],    "p": "shoulder_r", "cat": "limb_upper"},
-        "lower_arm_r": {"h": ar[1],                           "t": ar[2],    "p": "upper_arm_r","cat": "limb_lower"},
-        "hand_r":      {"h": ar[2],                           "t": _hand_tip(ar), "p": "lower_arm_r","cat": "extremity"},
+        "RightShoulder": {"h": (cx + sh_x*0.15, cy, sp2z),     "t": ar[0],    "p": "Chest",   "cat": "limb_upper"},
+        "RightUpperArm": {"h": ar[0],                           "t": ar[1],    "p": "RightShoulder", "cat": "limb_upper"},
+        "RightLowerArm": {"h": ar[1],                           "t": _mid(ar[1], ar[2]), "p": "RightUpperArm","cat": "limb_lower"},
+        "RightLowerArmTwist": {"h": _mid(ar[1], ar[2]),         "t": ar[2],    "p": "RightLowerArm", "cat": "limb_lower"},
+        "RightHand":     {"h": ar[2],                           "t": _hand_tip(ar), "p": "RightLowerArmTwist","cat": "extremity"},
+        "RightGrip":     {"h": ar[2],                           "t": (ar[2][0], ar[2][1] - height*0.05, ar[2][2]), "p": "RightHand", "cat": "extremity"},
 
         # Left leg
-        "thigh_l": {"h": (cx - hip_x, cy, pz),  "t": (cx - hip_x, cy, knz), "p": "pelvis",  "cat": "limb_upper"},
-        "shin_l":  {"h": (cx - hip_x, cy, knz), "t": (cx - hip_x, cy, anz), "p": "thigh_l", "cat": "limb_lower"},
-        "foot_l":  {"h": (cx - hip_x, cy, anz), "t": (cx - hip_x, cy - height*0.08, z0),"p": "shin_l", "cat": "extremity"},
+        "LeftUpperLeg": {"h": (cx - hip_x, cy, pz),  "t": (cx - hip_x, cy, knz), "p": "Hips",  "cat": "limb_upper"},
+        "LeftLowerLeg": {"h": (cx - hip_x, cy, knz), "t": (cx - hip_x, cy, (knz+anz)*0.5), "p": "LeftUpperLeg", "cat": "limb_lower"},
+        "LeftLowerLegTwist": {"h": (cx - hip_x, cy, (knz+anz)*0.5), "t": (cx - hip_x, cy, anz), "p": "LeftLowerLeg", "cat": "limb_lower"},
+        "LeftFoot":     {"h": (cx - hip_x, cy, anz), "t": (cx - hip_x, toe_y, z0),"p": "LeftLowerLegTwist", "cat": "extremity"},
 
         # Right leg
-        "thigh_r": {"h": (cx + hip_x, cy, pz),  "t": (cx + hip_x, cy, knz), "p": "pelvis",  "cat": "limb_upper"},
-        "shin_r":  {"h": (cx + hip_x, cy, knz), "t": (cx + hip_x, cy, anz), "p": "thigh_r", "cat": "limb_lower"},
-        "foot_r":  {"h": (cx + hip_x, cy, anz), "t": (cx + hip_x, cy - height*0.08, z0),"p": "shin_r", "cat": "extremity"},
+        "RightUpperLeg": {"h": (cx + hip_x, cy, pz),  "t": (cx + hip_x, cy, knz), "p": "Hips",  "cat": "limb_upper"},
+        "RightLowerLeg": {"h": (cx + hip_x, cy, knz), "t": (cx + hip_x, cy, (knz+anz)*0.5), "p": "RightUpperLeg", "cat": "limb_lower"},
+        "RightLowerLegTwist": {"h": (cx + hip_x, cy, (knz+anz)*0.5), "t": (cx + hip_x, cy, anz), "p": "RightLowerLeg", "cat": "limb_lower"},
+        "RightFoot":    {"h": (cx + hip_x, cy, anz), "t": (cx + hip_x, toe_y, z0),"p": "RightLowerLegTwist", "cat": "extremity"},
     }
 
     # ─ Create Blender armature ───────────────────────────────────────────────────
