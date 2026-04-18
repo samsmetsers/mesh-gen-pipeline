@@ -189,3 +189,6 @@ output/*
 external/*
 .venv*
 memory/*
+MEMORY.md
+CLAUDE.md
+GEMINI.md
